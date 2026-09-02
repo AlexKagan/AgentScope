@@ -1,0 +1,91 @@
+[project]
+name = "agentscope"
+version = "0.0.0"
+description = "AgentScope - an experimental agent-design platform (Phase 0 foundation)."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.6",
+    # Telemetry: OTLP-over-HTTP only. Pure-Python, no grpc, safe to install
+    # everywhere. Imported lazily and only when telemetry is enabled.
+    "opentelemetry-api>=1.29",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-exporter-otlp-proto-http>=1.29",
+    "openinference-semantic-conventions>=0.1.14",
+]
+
+[project.optional-dependencies]
+# The arize-phoenix-otel convenience wrapper (pulls opentelemetry-exporter-otlp
+# -> grpcio). Not needed: configure_phoenix builds the OTLP/HTTP pipeline
+# directly. Kept declared for teams that want register().
+phoenix = [
+    "arize-phoenix-otel>=0.6",
+]
+# Declared and locked now so Phase 1+ does not re-litigate resolution, but NOT
+# installed by the default `uv sync` and NEVER imported by Phase 0 code. Install
+# with `uv sync --extra future` when a later phase needs them.
+future = [
+    "fastapi>=0.141.1",
+    "streamlit>=1.40",
+    "langchain>=1.3.18",
+    "langgraph>=1.2.11",
+    "openai>=3.7.0",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "bottleneck>=1.6.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.2,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=6.0",
+    "mypy>=2.3.0",
+    "ruff>=0.16.1",
+    "ipykernel>=7.3.0",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: asserts, hard-coded fake secrets, subprocess with a bare "git", and
+# literal /tmp paths in path-confinement fixtures are all intentional.
+"tests/**" = ["S101", "S105", "S106", "S108", "S603", "S607"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# Tests pass pydantic-settings' private init kwargs (_env_file=...) which its
+# type stub does not expose, and use liberal `# type: ignore` for the same.
+module = "tests.*"
+warn_unused_ignores = false
+disable_error_code = ["call-arg"]
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = "-ra -m 'not external' --strict-markers --cov=agentscope --cov-report=term-missing"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "external: talks to a real external service; excluded from the default run",
+    "phoenix: emits a trace to a real Arize Phoenix endpoint (implies external)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["agentscope"]

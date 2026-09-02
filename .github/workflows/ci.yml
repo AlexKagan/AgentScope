@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.14", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.8"
+          enable-cache: true
+
+      - name: Pin Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      - name: Sync (frozen, no extras)
+        run: uv sync --frozen --python ${{ matrix.python }}
+
+      - name: Ruff lint
+        run: uv run --python ${{ matrix.python }} ruff check .
+
+      - name: Ruff format check
+        run: uv run --python ${{ matrix.python }} ruff format --check .
+
+      - name: Mypy
+        run: uv run --python ${{ matrix.python }} mypy
+
+      - name: Pytest (deterministic; excludes external)
+        run: uv run --python ${{ matrix.python }} pytest
+
+  secret-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

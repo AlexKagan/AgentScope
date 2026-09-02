@@ -1,0 +1,33 @@
+name: Phoenix smoke
+
+# Opt-in only. Emits one synthetic, sanitized trace to a real Phoenix endpoint.
+# Never runs on pull_request (no secrets to fork PRs) and never shares a job with
+# untrusted sandbox code.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, informational
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'AlexKagan'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.8"
+          enable-cache: true
+
+      - name: Sync (frozen)
+        run: uv sync --frozen
+
+      - name: Phoenix smoke trace
+        env:
+          AGENTSCOPE_TELEMETRY_ENABLED: "true"
+          AGENTSCOPE_TELEMETRY_ENDPOINT: ${{ secrets.AGENTSCOPE_TELEMETRY_ENDPOINT }}
+          AGENTSCOPE_PHOENIX_API_KEY: ${{ secrets.AGENTSCOPE_PHOENIX_API_KEY }}
+          AGENTSCOPE_OTLP_HEADERS: ${{ secrets.AGENTSCOPE_OTLP_HEADERS }}
+        run: uv run pytest -m phoenix
