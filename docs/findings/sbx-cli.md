@@ -182,9 +182,7 @@ timeout
 A timed-out command burns the sandbox for the remainder of that AgentScope
 run. Any caller issuing multiple commands through one runtime must be
 prepared for the runtime to become invalid mid-run after a single timeout.
-This should get its own ADR when Step 9 is implemented (the plan already
-anticipates this: "timeout must destroy the whole sandbox because killing
-`sbx exec` does not terminate the remote process").
+Implemented in Step 9 and formalized in **ADR 0011**.
 
 ## Sandbox-scoped network deny (Step 11)
 
@@ -197,10 +195,31 @@ scoped to that one sandbox — so AgentScope's isolation doesn't depend on
 whatever the host machine's global policy happens to be. Wired into
 `SbxCli.build_create_argv(..., deny_network=True)` (the default).
 
+## Known gap: a vanished sandbox cannot be distinguished from a real exit code (Step 13)
+
+`sbx exec` on a sandbox name that no longer exists returns **exit code 1**
+with an error message on stderr (`"ERROR: no sandbox named '<name>'"`) —
+confirmed empirically the same exit code (`1`) a real user command like
+`sh -c 'exit 1'` produces on an existing sandbox. There is no distinct,
+documented exit code for "sbx itself failed" (contrast Docker's own
+convention of reserving 125–127 for daemon-level failures). The only
+distinguishing signal is unstructured stderr text, which is not a stable API
+to parse.
+
+**Team decision:** document rather than build fragile stderr pattern-matching
+(`docs/findings/sbx-cli.md` is not the place to encode a dependency on
+undocumented CLI wording that could silently break on a future `sbx`
+version). Confirmed and accepted in
+`tests/external/test_sbx_error_normalization.py`: if a sandbox is removed
+*externally* (not through the owning `SbxSandboxRuntime`'s own `close()`),
+the next `execute()` call currently reports `ExecStatus.COMPLETED,
+exit_code=1` rather than `ExecStatus.INFRA_FAILURE`. This does not affect
+AgentScope's own lifecycle management (nothing in AgentScope removes a
+sandbox out from under a live `SbxSandboxRuntime`) — it only matters if
+something outside AgentScope interferes with a running sandbox.
+
 ## Open items not yet exercised by this spike
 
-- `sbx cp` was not exercised (Step 12 plans to avoid it in favor of the
-  mounted workspace anyway).
 - `sbx cp` was not exercised (Step 12 plans to avoid it in favor of the
   mounted workspace anyway).
 - Symlink-escape and path-traversal behavior specific to the real `sbx` mount

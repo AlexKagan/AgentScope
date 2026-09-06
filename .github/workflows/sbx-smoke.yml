@@ -1,0 +1,70 @@
+name: sbx smoke
+
+# Opt-in only. Exercises the real sbx (Docker Sandboxes) backend: contract
+# suite against the real runtime, black-box isolation (environment,
+# filesystem, network), timeout/orphan-process behavior, and lifecycle.
+#
+# Requires a SELF-HOSTED runner: sbx's Linux backend needs KVM hardware
+# virtualization, which GitHub-hosted ubuntu-latest runners do not reliably
+# provide (nested virtualization is unsupported/inconsistent there - see
+# docs/findings/sbx-cli.md). This workflow targets a self-hosted runner
+# labeled "sbx" that has sbx installed and meets its host requirements
+# (Apple Silicon + macOS Tahoe+, verified in docs/findings/sbx-cli.md; or a
+# Linux box with confirmed KVM support).
+#
+# Never runs on pull_request (no secrets to fork PRs; never shares a runner
+# with untrusted code) and never shares a job with anything that isn't this
+# real-backend suite.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays, informational
+
+env:
+  # Pinned per docs/findings/sbx-cli.md. Bump only after re-verifying the
+  # findings doc's assumptions against the new version's behavior.
+  EXPECTED_SBX_VERSION: "v0.39.0"
+
+jobs:
+  smoke:
+    name: sbx real-backend suite
+    runs-on: [self-hosted, sbx]
+    if: github.repository_owner == 'AlexKagan'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.8"
+          enable-cache: true
+
+      - name: Sync (frozen)
+        run: uv sync --frozen
+
+      - name: Verify sbx is installed at the pinned version
+        run: |
+          set -euo pipefail
+          ACTUAL="$(sbx version | awk '{print $3}')"
+          echo "sbx version: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED_SBX_VERSION" ]; then
+            echo "::error::sbx version mismatch: expected $EXPECTED_SBX_VERSION, got $ACTUAL. Re-verify docs/findings/sbx-cli.md against the new version before bumping EXPECTED_SBX_VERSION here."
+            exit 1
+          fi
+
+      - name: sbx login (non-interactive)
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.SBX_DOCKER_ACCESS_TOKEN }}" | sbx login --username "${{ secrets.SBX_DOCKER_USERNAME }}" --password-stdin
+
+      - name: Ensure global network policy is deny-all
+        run: sbx policy init deny-all || true
+
+      - name: Real sbx backend suite
+        run: uv run pytest -m sbx
+
+      - name: Clean up sandboxes and sign out
+        if: always()
+        run: |
+          sbx rm --all -f || true
+          sbx logout -y || true

@@ -20,9 +20,26 @@ loading, telemetry, the runtime contract, or security policy.
 
 ## Phase 0 scope
 
-Phase 0 builds only the seams. There is **no runnable agent** and **no concrete
-sandbox backend**. See `AgentScope_Phase0_Foundation_System_Design_v2.md` for the
-full specification and `docs/adr/` for the decisions.
+Phase 0 built only the seams: configuration, telemetry, the composition
+root, and the backend-independent `SandboxRuntime` protocol. There was **no
+runnable agent** and **no concrete sandbox backend**. See
+`AgentScope_Phase0_Foundation_System_Design_v2.md` for the full
+specification and `docs/adr/` for the decisions.
+
+## Phase 1A.1 scope
+
+Phase 1A.1 adds the first concrete `SandboxRuntime` implementation:
+`SbxSandboxRuntime`, backed by the real `sbx` (Docker Sandboxes) CLI. There
+is still **no runnable agent** — that remains a separate axis (Phase 1A+,
+`AgentArchitecture`/`ArchitectureRegistry`). What changed is that the
+runtime contract Phase 0 defined only as a `Protocol` now has a real,
+security-tested backend: sandbox lifecycle (create/reuse/close), command
+execution with argv fidelity, environment isolation, filesystem isolation,
+timeout/orphan-process handling, resource limits, and network isolation are
+all verified against the actual `sbx` binary, not just fakes. See
+`AgentScope_Phase1A1_Concrete_SandboxRuntime_Implementation_Plan.md`,
+`src/agentscope/runtime/README.md`, `docs/findings/sbx-cli.md`, and ADR 0011
+for the details.
 
 ## Capability layers
 
@@ -38,8 +55,9 @@ ArchitectureRegistry ----> AgentArchitecture implementation (Phase 1A+)
 +-------------------------------------------------------------+
 ```
 
-Phase 0 delivers `config`, `architectures`, `runtime` (contract only),
-`telemetry`, and `bootstrap`.
+Phase 0 delivered `config`, `architectures`, `runtime` (contract only),
+`telemetry`, and `bootstrap`. Phase 1A.1 adds a concrete `runtime` backend
+(`SbxSandboxRuntime`) without touching any other package.
 
 ## Packages and dependency rules
 
@@ -48,7 +66,7 @@ Phase 0 delivers `config`, `architectures`, `runtime` (contract only),
 | `bootstrap` | Composition root; loads config; constructs trusted deps | Agent topology; model-visible state |
 | `architectures` | Architecture contract, identity, registry | Shared runtime implementations |
 | `config` | Typed public + secret settings; validation; safe serialization | Provider-client construction |
-| `runtime` | `SandboxRuntime` protocol; safe request/result types; env + workspace policy | Concrete Docker behavior |
+| `runtime` | `SandboxRuntime` protocol; safe request/result types; env + workspace policy; the concrete `sbx` (Docker Sandboxes) backend (Phase 1A.1) | Model-visible tool wiring; agent control flow |
 | `telemetry` | Telemetry contract; sanitizer; no-op/in-memory + Phoenix exporters | Business / architecture control flow |
 
 **Dependency direction is inward toward contracts.** Platform packages must not

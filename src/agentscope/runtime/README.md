@@ -19,7 +19,7 @@ boundary that invokes the local `sbx` binary.
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
-| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent. |
+| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent (ADR 0011). |
 | `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` adds a sandbox-scoped `--deny-network "**"` whenever `deny_network=True` (the default) - confirmed to block all egress the same way as a global deny-all policy, but without depending on it. `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
@@ -32,14 +32,33 @@ boundary that invokes the local `sbx` binary.
 `PathEscapeError`, `DisallowedEnvVarError`, `HostEnvLookupError`; and
 `SandboxBackendError` (base `RuntimeError`, for sbx-backend infrastructure
 failures with no `ExecResult` to carry them) and its subclasses
-`SandboxCreationError`, `SandboxClosedError`. Full error-hierarchy
-normalization (mapping every `sbx`/subprocess failure mode) is Step 13.
+`SandboxCreationError`, `SandboxClosedError`.
+
+**Step 13 (error normalization) status:** nonzero exit codes are normal
+`ExecResult`s, not exceptions (Step 5); timeouts have distinct semantics via
+`ExecStatus.TIMED_OUT` (Step 9); raw `subprocess`/`OSError` never escapes
+`SbxCli.run` (Step 3); creation failures raise `SandboxCreationError`
+(Step 4). **Known, documented gap:** a sandbox removed *externally* (not via
+this runtime's own `close()`) cannot be told apart from a real command
+exiting with the same code — `sbx exec` returns exit code `1` in both cases,
+with no distinct, documented "sbx itself failed" exit code (unlike Docker's
+125–127 convention). Detecting it would require parsing undocumented stderr
+text; team decision was to document rather than build that fragile
+dependency (`docs/findings/sbx-cli.md`,
+`tests/external/test_sbx_error_normalization.py`). Does not affect
+AgentScope's own lifecycle management — only matters if something outside
+AgentScope interferes with a running sandbox.
 
 ## Tests
 `tests/unit/test_environment_policy.py`, `test_workspace_path.py`,
 `test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`,
 `test_sbx_sandbox_runtime.py`, `test_sbx_path_confinement.py`,
-`test_sbx_timeout.py`; `tests/contract/test_sandbox_runtime_contract.py`.
+`test_sbx_timeout.py`; `tests/contract/test_sandbox_runtime_contract.py`
+(Step 14: the `any_runtime` fixture runs the same protocol-conformance,
+`execute()`, and idempotent-`close()` assertions against both
+`FakeSandboxRuntime` and the real `SbxSandboxRuntime` - the `sbx` fixture
+row is marked `external` + `sbx` and excluded from the default run, like
+every other real-backend test).
 A unit test greps `environment.py` to prove it never reads `os.environ`.
 All of the `test_sbx_*.py` unit modules use a fake subprocess runner - no
 real `sbx` needed. `test_sbx_path_confinement.py` (Step 8) proves
@@ -79,6 +98,16 @@ backend:
   policy blocks egress regardless of the machine's global policy, local
   command execution is unaffected, and no combination of `execute()`'s `env`
   can lift the block.
+- `test_sbx_lifecycle.py` (Step 15) — create/reuse/close verified against
+  the real backend through an independent channel (`sbx ls --json` run
+  directly, not through our own `SbxCli`): exactly one sandbox is created,
+  it persists (not recreated) across multiple `execute()` calls, and it's
+  actually gone from `sbx ls` after `close()` (idempotent even then).
+  Step 4's equivalent tests only ever used a scripted CLI double.
+- `test_sbx_error_normalization.py` (Step 13) — documents, rather than
+  papers over, the one confirmed gap in error normalization: an externally
+  removed sandbox is indistinguishable from a real `exit 1` by exit code
+  alone (see the Failure modes section above).
 
 Full black-box security tests (path-attack argv forms) are Step 15.
 
@@ -91,10 +120,26 @@ positive allowlisting from an empty baseline, and every model-facing path is
 confined to the task workspace. Phase 0 proves these with policy tests; Phase 1A
 adds black-box assertions from inside the real sandbox.
 
+## CI
+`.github/workflows/sbx-smoke.yml` runs the real `sbx` backend suite
+(`uv run pytest -m sbx`) on a **self-hosted** runner labeled `[self-hosted,
+sbx]` — GitHub-hosted `ubuntu-latest` runners don't reliably support the KVM
+virtualization `sbx`'s Linux backend needs (unsupported/inconsistent nested
+virtualization), so this deliberately does not run on standard hosted
+runners. `workflow_dispatch` + a weekly informational schedule only — never
+on `push`/`pull_request`, since it holds real Docker credentials
+(`SBX_DOCKER_USERNAME` / `SBX_DOCKER_ACCESS_TOKEN` secrets, non-interactive
+`sbx login --password-stdin`) and must never share a runner with untrusted
+PR code. The `sbx` version is pinned (`EXPECTED_SBX_VERSION` in the
+workflow) against `docs/findings/sbx-cli.md`'s verified behavior; the job
+fails loudly on a version drift rather than silently testing against
+unverified behavior. Cleans up (`sbx rm --all -f`, `sbx logout`) in an
+`if: always()` step regardless of outcome. The default `ci.yml` remains
+entirely `sbx`-free (`pytest`'s default `-m 'not external'`).
+
 ## Deferred work
-Full black-box security suite (path-attack argv forms) — Step 15. Dynamic
-network allowlists and package-registry access remain out of scope for
-Phase 1A.1 entirely (see the implementation plan).
+Dynamic network allowlists and package-registry access remain out of scope
+for Phase 1A.1 entirely (see the implementation plan).
 
 **Known gap (Step 6, deliberately deferred):** `SANDBOX_BASE_ENV["HOME"]` is
 `"/workspace"`, but the real `sbx` backend mounts the workspace at its own
