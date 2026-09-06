@@ -33,6 +33,7 @@ class FakeSandboxRuntime:
         self._workspace = workspace
         self._result = result or ExecResult(status=ExecStatus.COMPLETED, exit_code=0, stdout=b"ok")
         self.last_request: ExecRequest | None = None
+        self.close_calls = 0
 
     @property
     def workspace(self) -> WorkspaceRoot:
@@ -43,6 +44,9 @@ class FakeSandboxRuntime:
         assert not request.cwd.startswith("/")
         self.last_request = request
         return self._result
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 class FakeModelClient:

@@ -115,3 +115,34 @@ class SbxCli:
         argv.append(sandbox)
         argv.extend(command)
         return argv
+
+    @staticmethod
+    def build_create_argv(
+        name: str, workspace_path: str, *, cpu_limit: int, memory_limit: str
+    ) -> list[str]:
+        """Build the argv for ``sbx create shell`` (see docs/findings/sbx-cli.md).
+
+        Uses the ``shell`` agent, the one suited to generic command execution,
+        with exactly one workspace mounted at its host path.
+        """
+        return [
+            "create",
+            "shell",
+            workspace_path,
+            "--name",
+            name,
+            "--cpus",
+            str(cpu_limit),
+            "--memory",
+            memory_limit,
+        ]
+
+    @staticmethod
+    def build_stop_argv(name: str) -> list[str]:
+        """Build the argv for ``sbx stop`` - halts without removing state."""
+        return ["stop", name]
+
+    @staticmethod
+    def build_rm_argv(name: str) -> list[str]:
+        """Build the argv for ``sbx rm -f`` - final, forced teardown."""
+        return ["rm", "-f", name]

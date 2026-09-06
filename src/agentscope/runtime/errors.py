@@ -7,6 +7,9 @@ __all__ = [
     "HostEnvLookupError",
     "PathEscapeError",
     "RuntimeContractError",
+    "SandboxBackendError",
+    "SandboxClosedError",
+    "SandboxCreationError",
 ]
 
 
@@ -24,3 +27,17 @@ class DisallowedEnvVarError(RuntimeContractError):
 
 class HostEnvLookupError(RuntimeContractError):
     """Raised whenever code tries to read a host environment variable by name."""
+
+
+class SandboxBackendError(RuntimeError):
+    """Base for sbx-backend infrastructure failures with no ``ExecResult`` to
+    carry them (unlike a command's own outcome, which is always an
+    ``ExecResult`` - see ``ExecStatus.INFRA_FAILURE`` for that case)."""
+
+
+class SandboxCreationError(SandboxBackendError):
+    """Raised when the backend sandbox itself could not be created."""
+
+
+class SandboxClosedError(SandboxBackendError):
+    """Raised by any operation attempted on an already-``close()``d runtime."""

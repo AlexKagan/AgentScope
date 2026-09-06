@@ -1,20 +1,31 @@
-"""Configuration for the ``sbx`` (Docker Sandboxes) backend (Phase 1A.1, Step 2).
+"""The ``sbx`` (Docker Sandboxes) backend (Phase 1A.1).
 
-Values are constrained by empirically observed ``sbx`` CLI behavior rather
-than assumption - see ``docs/findings/sbx-cli.md`` for the spike that
-produced the 1 GiB memory minimum and the sandbox-name rules enforced below.
-This module declares configuration shape only; it does not invoke ``sbx``.
+``SbxRuntimeConfig`` (Step 2) declares configuration shape, constrained by
+empirically observed ``sbx`` CLI behavior rather than assumption - see
+``docs/findings/sbx-cli.md`` for the spike that produced the 1 GiB memory
+minimum and the sandbox-name rules enforced below.
+
+``SbxSandboxRuntime`` (Step 4) implements the ``SandboxRuntime`` protocol by
+driving one persistent sandbox through the ``_sbx_cli`` boundary: create at
+construction, reuse for every ``execute()`` call, release on ``close()``.
+Creation happens eagerly in ``__init__`` so a runtime object only ever exists
+in a usable state - there is no separate "half-initialized" state to leak.
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 
-from agentscope.runtime.errors import RuntimeContractError
+from agentscope.runtime._sbx_cli import SbxCli
+from agentscope.runtime.errors import RuntimeContractError, SandboxClosedError, SandboxCreationError
+from agentscope.runtime.requests import ExecRequest
+from agentscope.runtime.results import ExecResult, ExecStatus
+from agentscope.runtime.workspace import WorkspaceRoot, resolve_within
 
-__all__ = ["NetworkPolicy", "SbxRuntimeConfig"]
+__all__ = ["NetworkPolicy", "SbxRuntimeConfig", "SbxSandboxRuntime"]
 
 # sbx enforces a hard floor of 1 GiB regardless of the requested value.
 _MIN_MEMORY_BYTES = 1024**3
@@ -100,3 +111,100 @@ class SbxRuntimeConfig:
         for field_name in ("create_timeout_s", "default_command_timeout_s", "cleanup_timeout_s"):
             if getattr(self, field_name) <= 0:
                 raise RuntimeContractError(f"{field_name} must be > 0")
+
+
+class SbxSandboxRuntime:
+    """A ``SandboxRuntime`` backed by one persistent ``sbx`` sandbox.
+
+    Lifecycle: ``NEW -> create (in __init__) -> READY -> execute* -> close()
+    -> CLOSED``. There is no reachable "half-created" state: if sandbox
+    creation fails, ``__init__`` raises and no instance is ever returned.
+
+    A command timeout burns the whole sandbox rather than just that command
+    (see docs/findings/sbx-cli.md): the spike proved that killing the local
+    ``sbx exec`` process does not stop the remote command, only ``sbx stop``
+    does. Step 9 wires that behavior into ``execute()``; for now a timed-out
+    local ``sbx exec`` call is reported as ``ExecStatus.TIMED_OUT`` without
+    yet forcing sandbox teardown.
+    """
+
+    def __init__(
+        self,
+        config: SbxRuntimeConfig,
+        workspace: WorkspaceRoot,
+        *,
+        cli: SbxCli | None = None,
+    ) -> None:
+        self._config = config
+        self._workspace = workspace
+        self._cli = cli or SbxCli()
+        self._name = f"{config.sandbox_name_prefix}-{uuid.uuid4().hex[:12]}"
+        self._closed = False
+        self._create()
+
+    @property
+    def name(self) -> str:
+        """The unique name of the underlying ``sbx`` sandbox."""
+        return self._name
+
+    @property
+    def workspace(self) -> WorkspaceRoot:
+        return self._workspace
+
+    def _create(self) -> None:
+        argv = SbxCli.build_create_argv(
+            self._name,
+            str(self._workspace.path),
+            cpu_limit=self._config.cpu_limit,
+            memory_limit=self._config.memory_limit,
+        )
+        result = self._cli.run(argv, timeout_s=self._config.create_timeout_s)
+        if result.error is not None or result.timed_out or result.returncode != 0:
+            self._closed = True  # never becomes READY; execute()/close() must refuse to act
+            detail = result.error or result.stderr.decode("utf-8", errors="replace").strip()
+            raise SandboxCreationError(f"failed to create sandbox {self._name!r}: {detail}")
+
+    def execute(self, request: ExecRequest) -> ExecResult:
+        if self._closed:
+            raise SandboxClosedError(f"sandbox {self._name!r} is closed")
+
+        absolute_cwd = resolve_within(self._workspace, request.cwd)
+        argv = SbxCli.build_exec_argv(
+            self._name, request.command, cwd=str(absolute_cwd), env=request.env
+        )
+        cli_result = self._cli.run(argv, timeout_s=request.timeout_s)
+
+        if cli_result.timed_out:
+            return ExecResult(status=ExecStatus.TIMED_OUT, message="command exceeded timeout_s")
+        if cli_result.error is not None:
+            return ExecResult(status=ExecStatus.INFRA_FAILURE, message=cli_result.error)
+
+        if cli_result.returncode is None:
+            # Neither timed_out nor error was set, yet there is no exit code -
+            # an sbx response shape we have not observed; treat it as an
+            # infra failure rather than fabricating a COMPLETED result.
+            return ExecResult(
+                status=ExecStatus.INFRA_FAILURE, message="sbx exec returned no exit code"
+            )
+
+        stdout, stdout_truncated = _truncate(cli_result.stdout, request.max_output_bytes)
+        stderr, stderr_truncated = _truncate(cli_result.stderr, request.max_output_bytes)
+        return ExecResult(
+            status=ExecStatus.COMPLETED,
+            exit_code=cli_result.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            truncated=stdout_truncated or stderr_truncated,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._cli.run(SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s)
+        self._closed = True
+
+
+def _truncate(data: bytes, max_bytes: int) -> tuple[bytes, bool]:
+    if len(data) <= max_bytes:
+        return data, False
+    return data[:max_bytes], True

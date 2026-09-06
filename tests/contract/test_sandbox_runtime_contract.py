@@ -40,3 +40,13 @@ def test_request_cannot_carry_absolute_cwd() -> None:
     # The contract makes an unsafe request unrepresentable at construction time.
     with pytest.raises(ValueError):
         ExecRequest(command=("x",), cwd="/etc")
+
+
+def test_close_is_idempotent(fake_workspace: object) -> None:
+    # Phase 1A.1 (ADR 0004 amendment): close() joined the shared contract
+    # because a real sandbox is a resource callers must be able to release
+    # through the SandboxRuntime type alone, not just the concrete backend.
+    rt = FakeSandboxRuntime(fake_workspace)  # type: ignore[arg-type]
+    rt.close()
+    rt.close()
+    assert rt.close_calls == 2

@@ -5,22 +5,22 @@ Owns the backend-independent `SandboxRuntime` protocol, the boundary-safe
 request/result types, and the two boundary policies: sandbox-environment
 construction by allowlist, and workspace path confinement.
 
-Also owns `SbxRuntimeConfig` (Phase 1A.1): typed, validated configuration for
-the `sbx` (Docker Sandboxes) backend, and the private `_sbx_cli.py` boundary
-that invokes the local `sbx` binary. Does not yet own the backend itself
-(`SbxSandboxRuntime`, Step 4).
+Also owns `SbxRuntimeConfig` and `SbxSandboxRuntime` (Phase 1A.1): the
+concrete `sbx` (Docker Sandboxes) backend, and the private `_sbx_cli.py`
+boundary that invokes the local `sbx` binary.
 
 ## Public contracts
 | Symbol | Contract |
 |---|---|
-| `SandboxRuntime` (Protocol) | `workspace: WorkspaceRoot`; `execute(ExecRequest) -> ExecResult`. No implicit host env, no unrestricted host path. |
+| `SandboxRuntime` (Protocol) | `workspace: WorkspaceRoot`; `execute(ExecRequest) -> ExecResult`; `close() -> None` (idempotent — added Phase 1A.1, ADR 0004 amendment). No implicit host env, no unrestricted host path. |
 | `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); `env` coerced to `str`→`str` and assumed already filtered; positive `timeout_s` / `max_output_bytes`. |
 | `ExecResult` / `ExecStatus` | Frozen. `COMPLETED` carries `exit_code`; `TIMED_OUT` / `INFRA_FAILURE` must not. `truncated` flags output-limit hits. |
 | `build_sandbox_environment` | Empty baseline (`SANDBOX_BASE_ENV` literals) + allowlisted requests only. Values literal, never interpolated. Never reads `os.environ`. |
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
-| `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
+| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). Operations after `close()` raise `SandboxClosedError`. `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. |
+| `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` / `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
 - **Inward:** none.
@@ -29,14 +29,19 @@ that invokes the local `sbx` binary. Does not yet own the backend itself
 
 ## Failure modes
 `RuntimeContractError` (base `ValueError`) and its subclasses
-`PathEscapeError`, `DisallowedEnvVarError`, `HostEnvLookupError`.
+`PathEscapeError`, `DisallowedEnvVarError`, `HostEnvLookupError`; and
+`SandboxBackendError` (base `RuntimeError`, for sbx-backend infrastructure
+failures with no `ExecResult` to carry them) and its subclasses
+`SandboxCreationError`, `SandboxClosedError`. Full error-hierarchy
+normalization (mapping every `sbx`/subprocess failure mode) is Step 13.
 
 ## Tests
 `tests/unit/test_environment_policy.py`, `test_workspace_path.py`,
-`test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`;
-`tests/contract/test_sandbox_runtime_contract.py`.
+`test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`,
+`test_sbx_sandbox_runtime.py`; `tests/contract/test_sandbox_runtime_contract.py`.
 A unit test greps `environment.py` to prove it never reads `os.environ`.
-`test_sbx_cli.py` uses a fake subprocess runner - no real `sbx` needed.
+`test_sbx_cli.py` and `test_sbx_sandbox_runtime.py` use a fake subprocess
+runner - no real `sbx` needed. Real-backend black-box tests are Step 15.
 
 ## Telemetry
 None emitted in Phase 0.

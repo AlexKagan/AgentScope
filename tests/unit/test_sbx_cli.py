@@ -103,6 +103,24 @@ def test_sbx_cli_build_exec_argv_without_cwd_or_env() -> None:
     assert argv == ["exec", "my-sandbox", "true"]
 
 
+def test_sbx_cli_build_create_argv_uses_shell_agent_and_workspace() -> None:
+    argv = SbxCli.build_create_argv("my-sandbox", "/task/workspace", cpu_limit=2, memory_limit="2g")
+    assert argv[:2] == ["create", "shell"]
+    assert "/task/workspace" in argv
+    assert argv[argv.index("--name") + 1] == "my-sandbox"
+    assert argv[argv.index("--cpus") + 1] == "2"
+    assert argv[argv.index("--memory") + 1] == "2g"
+
+
+def test_sbx_cli_build_stop_argv() -> None:
+    assert SbxCli.build_stop_argv("my-sandbox") == ["stop", "my-sandbox"]
+
+
+def test_sbx_cli_build_rm_argv_forces_removal() -> None:
+    # -f is required to remove a sandbox that a prior step left running.
+    assert SbxCli.build_rm_argv("my-sandbox") == ["rm", "-f", "my-sandbox"]
+
+
 def test_sbx_cli_run_returns_captured_output() -> None:
     completed = subprocess.CompletedProcess(args=(), returncode=7, stdout=b"out", stderr=b"err")
     cli = SbxCli(runner=_RecordingRunner(completed))
