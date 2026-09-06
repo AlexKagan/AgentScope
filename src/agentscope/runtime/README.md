@@ -20,7 +20,7 @@ boundary that invokes the local `sbx` binary.
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
 | `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent. |
-| `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` / `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
+| `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` adds a sandbox-scoped `--deny-network "**"` whenever `deny_network=True` (the default) - confirmed to block all egress the same way as a global deny-all policy, but without depending on it. `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
 - **Inward:** none.
@@ -72,8 +72,15 @@ backend:
   a continuously-updated file inside the workspace is confirmed to actually
   stop changing (not just that the local wait gave up), and the runtime is
   confirmed unusable for further `execute()` calls afterward.
+- `test_sbx_resource_limits.py` (Step 10) — `cpu_limit`/`memory_limit` are
+  confirmed actually applied (`nproc`, `/proc/meminfo`) through the real
+  `SbxSandboxRuntime`, not just the raw CLI. Deliberately no OOM test.
+- `test_sbx_network_isolation.py` (Step 11) — the sandbox-scoped deny-all
+  policy blocks egress regardless of the machine's global policy, local
+  command execution is unaffected, and no combination of `execute()`'s `env`
+  can lift the block.
 
-Full black-box security tests (path-attack argv forms, network) are Step 15.
+Full black-box security tests (path-attack argv forms) are Step 15.
 
 ## Telemetry
 None emitted in Phase 0.
@@ -85,9 +92,9 @@ confined to the task workspace. Phase 0 proves these with policy tests; Phase 1A
 adds black-box assertions from inside the real sandbox.
 
 ## Deferred work
-CPU/memory limits are already passed to `sbx create` (`SbxRuntimeConfig`,
-Step 2/4); black-box verification that they're actually applied is Step 10.
-Network isolation is Step 11.
+Full black-box security suite (path-attack argv forms) — Step 15. Dynamic
+network allowlists and package-registry access remain out of scope for
+Phase 1A.1 entirely (see the implementation plan).
 
 **Known gap (Step 6, deliberately deferred):** `SANDBOX_BASE_ENV["HOME"]` is
 `"/workspace"`, but the real `sbx` backend mounts the workspace at its own

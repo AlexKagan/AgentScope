@@ -118,14 +118,26 @@ class SbxCli:
 
     @staticmethod
     def build_create_argv(
-        name: str, workspace_path: str, *, cpu_limit: int, memory_limit: str
+        name: str,
+        workspace_path: str,
+        *,
+        cpu_limit: int,
+        memory_limit: str,
+        deny_network: bool = True,
     ) -> list[str]:
         """Build the argv for ``sbx create shell`` (see docs/findings/sbx-cli.md).
 
         Uses the ``shell`` agent, the one suited to generic command execution,
         with exactly one workspace mounted at its host path.
+
+        ``deny_network=True`` (the default) adds a sandbox-scoped
+        ``--deny-network "**"`` - confirmed empirically to block all egress
+        the same way the global deny-all policy does - so isolation does not
+        depend solely on whatever the host's global network policy happens to
+        be (plan Step 11: "prefer a sandbox-scoped deny-all policy rather than
+        relying only on global machine configuration").
         """
-        return [
+        argv = [
             "create",
             "shell",
             workspace_path,
@@ -136,6 +148,9 @@ class SbxCli:
             "--memory",
             memory_limit,
         ]
+        if deny_network:
+            argv.extend(["--deny-network", "**"])
+        return argv
 
     @staticmethod
     def build_stop_argv(name: str) -> list[str]:

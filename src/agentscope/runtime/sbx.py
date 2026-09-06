@@ -167,6 +167,7 @@ class SbxSandboxRuntime:
             str(self._workspace.path),
             cpu_limit=self._config.cpu_limit,
             memory_limit=self._config.memory_limit,
+            deny_network=self._config.network_policy is NetworkPolicy.DISABLED,
         )
         result = self._cli.run(argv, timeout_s=self._config.create_timeout_s)
         if result.error is not None or result.timed_out or result.returncode != 0:

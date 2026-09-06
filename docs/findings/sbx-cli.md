@@ -186,10 +186,21 @@ This should get its own ADR when Step 9 is implemented (the plan already
 anticipates this: "timeout must destroy the whole sandbox because killing
 `sbx exec` does not terminate the remote process").
 
+## Sandbox-scoped network deny (Step 11)
+
+`sbx create --deny-network RESOURCES` and `sbx policy deny network RESOURCES`
+take a comma-separated list of hostnames/domains/IPs, **or the wildcard
+`"**"` to block all outbound traffic** (`sbx policy deny network --help`).
+Confirmed empirically: `sbx create shell <path> --deny-network "**"` blocks
+egress the same way (`curl` → HTTP 403) as the global `deny-all` policy, but
+scoped to that one sandbox — so AgentScope's isolation doesn't depend on
+whatever the host machine's global policy happens to be. Wired into
+`SbxCli.build_create_argv(..., deny_network=True)` (the default).
+
 ## Open items not yet exercised by this spike
 
-- `--deny-network <resource>` (per-sandbox, narrower than the global policy)
-  was not exercised — only the global `deny-all` policy was tested.
+- `sbx cp` was not exercised (Step 12 plans to avoid it in favor of the
+  mounted workspace anyway).
 - `sbx cp` was not exercised (Step 12 plans to avoid it in favor of the
   mounted workspace anyway).
 - Symlink-escape and path-traversal behavior specific to the real `sbx` mount

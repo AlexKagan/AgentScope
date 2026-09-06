@@ -104,12 +104,27 @@ def test_sbx_cli_build_exec_argv_without_cwd_or_env() -> None:
 
 
 def test_sbx_cli_build_create_argv_uses_shell_agent_and_workspace() -> None:
-    argv = SbxCli.build_create_argv("my-sandbox", "/task/workspace", cpu_limit=2, memory_limit="2g")
+    argv = SbxCli.build_create_argv(
+        "my-sandbox", "/task/workspace", cpu_limit=2, memory_limit="2g", deny_network=False
+    )
     assert argv[:2] == ["create", "shell"]
     assert "/task/workspace" in argv
     assert argv[argv.index("--name") + 1] == "my-sandbox"
     assert argv[argv.index("--cpus") + 1] == "2"
     assert argv[argv.index("--memory") + 1] == "2g"
+    assert "--deny-network" not in argv
+
+
+def test_sbx_cli_build_create_argv_denies_all_network_by_default() -> None:
+    argv = SbxCli.build_create_argv("my-sandbox", "/task/workspace", cpu_limit=1, memory_limit="1g")
+    assert argv[argv.index("--deny-network") + 1] == "**"
+
+
+def test_sbx_cli_build_create_argv_omits_deny_network_when_disabled() -> None:
+    argv = SbxCli.build_create_argv(
+        "my-sandbox", "/task/workspace", cpu_limit=1, memory_limit="1g", deny_network=False
+    )
+    assert "--deny-network" not in argv
 
 
 def test_sbx_cli_build_stop_argv() -> None:
