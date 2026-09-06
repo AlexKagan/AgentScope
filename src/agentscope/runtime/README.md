@@ -5,8 +5,10 @@ Owns the backend-independent `SandboxRuntime` protocol, the boundary-safe
 request/result types, and the two boundary policies: sandbox-environment
 construction by allowlist, and workspace path confinement.
 
-Does **not** own any concrete sandbox backend. Docker Sandboxes implement the
-protocol in Phase 1A.
+Also owns `SbxRuntimeConfig` (Phase 1A.1): typed, validated configuration for
+the `sbx` (Docker Sandboxes) backend, and the private `_sbx_cli.py` boundary
+that invokes the local `sbx` binary. Does not yet own the backend itself
+(`SbxSandboxRuntime`, Step 4).
 
 ## Public contracts
 | Symbol | Contract |
@@ -17,6 +19,8 @@ protocol in Phase 1A.
 | `build_sandbox_environment` | Empty baseline (`SANDBOX_BASE_ENV` literals) + allowlisted requests only. Values literal, never interpolated. Never reads `os.environ`. |
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
+| `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
+| `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
 - **Inward:** none.
@@ -29,8 +33,10 @@ protocol in Phase 1A.
 
 ## Tests
 `tests/unit/test_environment_policy.py`, `test_workspace_path.py`,
-`test_exec_types.py`; `tests/contract/test_sandbox_runtime_contract.py`.
+`test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`;
+`tests/contract/test_sandbox_runtime_contract.py`.
 A unit test greps `environment.py` to prove it never reads `os.environ`.
+`test_sbx_cli.py` uses a fake subprocess runner - no real `sbx` needed.
 
 ## Telemetry
 None emitted in Phase 0.
