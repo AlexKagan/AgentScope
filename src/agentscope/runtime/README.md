@@ -43,13 +43,21 @@ A unit test greps `environment.py` to prove it never reads `os.environ`.
 `test_sbx_cli.py` and `test_sbx_sandbox_runtime.py` use a fake subprocess
 runner - no real `sbx` needed.
 
-`tests/external/test_sbx_execute.py` (marked `external` + `sbx`, excluded
-from the default run - `uv run pytest -m sbx`) exercises `execute()` against
-a real `sbx` sandbox: stdout/stderr capture, exit-code fidelity, argument
-boundaries surviving real subprocess invocation, `cwd` handling, and
-cross-command workspace sharing. Requires `sbx login` and a global network
-policy already initialized (`docs/findings/sbx-cli.md`). Full black-box
-security tests (secret isolation, path escapes, network, timeout) are
+`tests/external/` (marked `external` + `sbx`, excluded from the default run
+- `uv run pytest -m sbx`; requires `sbx login` and a global network policy
+already initialized, `docs/findings/sbx-cli.md`) exercises the real `sbx`
+backend:
+- `test_sbx_execute.py` — stdout/stderr capture, exit-code fidelity, argument
+  boundaries surviving real subprocess invocation, `cwd` handling, and
+  cross-command workspace sharing.
+- `test_sbx_environment_isolation.py` — a host-only secret is never inherited;
+  an explicitly allowlisted variable does reach the sandbox.
+- `test_sbx_filesystem_isolation.py` — only the mounted workspace is visible:
+  sibling directories, `.env`, a source-tree sentinel, `..` traversal, and
+  parent-directory listing are all confirmed unavailable, using a fixture
+  deliberately outside the AgentScope repo.
+
+Full black-box security tests (path-attack argv forms, network, timeout) are
 Step 15.
 
 ## Telemetry
