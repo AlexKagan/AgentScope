@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum, StrEnum
 
 from agentscope.runtime._sbx_cli import SbxCli
 from agentscope.runtime.errors import RuntimeContractError, SandboxClosedError, SandboxCreationError
@@ -113,6 +113,14 @@ class SbxRuntimeConfig:
                 raise RuntimeContractError(f"{field_name} must be > 0")
 
 
+class _State(Enum):
+    """Internal lifecycle state - never exposed; observed only via behavior."""
+
+    READY = "ready"
+    INVALID = "invalid"  # a command timed out; sandbox stopped, not yet removed
+    CLOSED = "closed"  # removed (or never successfully created)
+
+
 class SbxSandboxRuntime:
     """A ``SandboxRuntime`` backed by one persistent ``sbx`` sandbox.
 
@@ -122,10 +130,12 @@ class SbxSandboxRuntime:
 
     A command timeout burns the whole sandbox rather than just that command
     (see docs/findings/sbx-cli.md): the spike proved that killing the local
-    ``sbx exec`` process does not stop the remote command, only ``sbx stop``
-    does. Step 9 wires that behavior into ``execute()``; for now a timed-out
-    local ``sbx exec`` call is reported as ``ExecStatus.TIMED_OUT`` without
-    yet forcing sandbox teardown.
+    ``sbx exec`` process does not stop the remote command - only ``sbx stop``
+    does. So ``execute()`` follows a timeout with ``sbx stop`` (best-effort)
+    and moves to the ``INVALID`` state: no further ``execute()`` calls are
+    accepted (``SandboxClosedError``), but ``close()`` still performs the
+    final ``sbx rm -f`` when the caller eventually calls it. This is Case B
+    from the plan's Step 9 - proven, not assumed, by the Step 1 spike.
     """
 
     def __init__(
@@ -139,7 +149,7 @@ class SbxSandboxRuntime:
         self._workspace = workspace
         self._cli = cli or SbxCli()
         self._name = f"{config.sandbox_name_prefix}-{uuid.uuid4().hex[:12]}"
-        self._closed = False
+        self._state = _State.READY
         self._create()
 
     @property
@@ -160,13 +170,13 @@ class SbxSandboxRuntime:
         )
         result = self._cli.run(argv, timeout_s=self._config.create_timeout_s)
         if result.error is not None or result.timed_out or result.returncode != 0:
-            self._closed = True  # never becomes READY; execute()/close() must refuse to act
+            self._state = _State.CLOSED  # nothing was created; close() must not try to remove it
             detail = result.error or result.stderr.decode("utf-8", errors="replace").strip()
             raise SandboxCreationError(f"failed to create sandbox {self._name!r}: {detail}")
 
     def execute(self, request: ExecRequest) -> ExecResult:
-        if self._closed:
-            raise SandboxClosedError(f"sandbox {self._name!r} is closed")
+        if self._state is not _State.READY:
+            raise SandboxClosedError(f"sandbox {self._name!r} is closed or invalidated")
 
         absolute_cwd = resolve_within(self._workspace, request.cwd)
         argv = SbxCli.build_exec_argv(
@@ -175,6 +185,15 @@ class SbxSandboxRuntime:
         cli_result = self._cli.run(argv, timeout_s=request.timeout_s)
 
         if cli_result.timed_out:
+            # Killing the local `sbx exec` process (already done by the local
+            # subprocess timeout) does not stop the remote command - only
+            # `sbx stop` does (docs/findings/sbx-cli.md). Best-effort: even if
+            # this itself fails, the runtime is still marked INVALID so no
+            # caller can mistake it for a safe-to-reuse sandbox.
+            self._cli.run(
+                SbxCli.build_stop_argv(self._name), timeout_s=self._config.cleanup_timeout_s
+            )
+            self._state = _State.INVALID
             return ExecResult(status=ExecStatus.TIMED_OUT, message="command exceeded timeout_s")
         if cli_result.error is not None:
             return ExecResult(status=ExecStatus.INFRA_FAILURE, message=cli_result.error)
@@ -198,10 +217,10 @@ class SbxSandboxRuntime:
         )
 
     def close(self) -> None:
-        if self._closed:
+        if self._state is _State.CLOSED:
             return
         self._cli.run(SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s)
-        self._closed = True
+        self._state = _State.CLOSED
 
 
 def _truncate(data: bytes, max_bytes: int) -> tuple[bytes, bool]:

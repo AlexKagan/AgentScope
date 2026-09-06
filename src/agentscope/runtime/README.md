@@ -19,7 +19,7 @@ boundary that invokes the local `sbx` binary.
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
-| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). Operations after `close()` raise `SandboxClosedError`. `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. |
+| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent. |
 | `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` / `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
@@ -38,18 +38,19 @@ normalization (mapping every `sbx`/subprocess failure mode) is Step 13.
 ## Tests
 `tests/unit/test_environment_policy.py`, `test_workspace_path.py`,
 `test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`,
-`test_sbx_sandbox_runtime.py`, `test_sbx_path_confinement.py`;
-`tests/contract/test_sandbox_runtime_contract.py`.
+`test_sbx_sandbox_runtime.py`, `test_sbx_path_confinement.py`,
+`test_sbx_timeout.py`; `tests/contract/test_sandbox_runtime_contract.py`.
 A unit test greps `environment.py` to prove it never reads `os.environ`.
-`test_sbx_cli.py`, `test_sbx_sandbox_runtime.py`, and
-`test_sbx_path_confinement.py` use a fake subprocess runner - no real `sbx`
-needed. `test_sbx_path_confinement.py` (Step 8) proves absolute/`..` `cwd`
-never reaches `SbxSandboxRuntime` at all (rejected at `ExecRequest`
-construction) and a `cwd` symlink escape is rejected by `resolve_within`
-before any `sbx exec` call - and documents, as current scope rather than a
-gap, that only `cwd` is checked this way; a symlink named as a command
-*argument* is forwarded unexamined (verified safe anyway by the real
-backend's mount isolation in `test_sbx_filesystem_isolation.py`).
+All of the `test_sbx_*.py` unit modules use a fake subprocess runner - no
+real `sbx` needed. `test_sbx_path_confinement.py` (Step 8) proves
+absolute/`..` `cwd` never reaches `SbxSandboxRuntime` at all (rejected at
+`ExecRequest` construction) and a `cwd` symlink escape is rejected by
+`resolve_within` before any `sbx exec` call - and documents, as current
+scope rather than a gap, that only `cwd` is checked this way; a symlink
+named as a command *argument* is forwarded unexamined (verified safe anyway
+by the real backend's mount isolation in `test_sbx_filesystem_isolation.py`).
+`test_sbx_timeout.py` (Step 9) proves, against a scripted double, that a
+command timeout issues `sbx stop` and moves the runtime to `INVALID`.
 
 `tests/external/` (marked `external` + `sbx`, excluded from the default run
 - `uv run pytest -m sbx`; requires `sbx login` and a global network policy
@@ -66,9 +67,13 @@ backend:
   deliberately outside the AgentScope repo. Also confirms (Step 8) that a
   symlink inside the workspace pointing outside it cannot be followed -
   the sandbox's own mount means the target path doesn't exist there at all.
+- `test_sbx_timeout.py` (Step 9) — replicates the Step 1 spike's heartbeat
+  methodology through the real `execute()` path: after a command times out,
+  a continuously-updated file inside the workspace is confirmed to actually
+  stop changing (not just that the local wait gave up), and the runtime is
+  confirmed unusable for further `execute()` calls afterward.
 
-Full black-box security tests (path-attack argv forms, network, timeout) are
-Step 15.
+Full black-box security tests (path-attack argv forms, network) are Step 15.
 
 ## Telemetry
 None emitted in Phase 0.
@@ -80,8 +85,9 @@ confined to the task workspace. Phase 0 proves these with policy tests; Phase 1A
 adds black-box assertions from inside the real sandbox.
 
 ## Deferred work
-Verified process termination / resource limits / network isolation — later
-Phase 1A.1 steps (9, 11).
+CPU/memory limits are already passed to `sbx create` (`SbxRuntimeConfig`,
+Step 2/4); black-box verification that they're actually applied is Step 10.
+Network isolation is Step 11.
 
 **Known gap (Step 6, deliberately deferred):** `SANDBOX_BASE_ENV["HOME"]` is
 `"/workspace"`, but the real `sbx` backend mounts the workspace at its own
