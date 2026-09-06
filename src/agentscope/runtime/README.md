@@ -38,10 +38,18 @@ normalization (mapping every `sbx`/subprocess failure mode) is Step 13.
 ## Tests
 `tests/unit/test_environment_policy.py`, `test_workspace_path.py`,
 `test_exec_types.py`, `test_sbx_config.py`, `test_sbx_cli.py`,
-`test_sbx_sandbox_runtime.py`; `tests/contract/test_sandbox_runtime_contract.py`.
+`test_sbx_sandbox_runtime.py`, `test_sbx_path_confinement.py`;
+`tests/contract/test_sandbox_runtime_contract.py`.
 A unit test greps `environment.py` to prove it never reads `os.environ`.
-`test_sbx_cli.py` and `test_sbx_sandbox_runtime.py` use a fake subprocess
-runner - no real `sbx` needed.
+`test_sbx_cli.py`, `test_sbx_sandbox_runtime.py`, and
+`test_sbx_path_confinement.py` use a fake subprocess runner - no real `sbx`
+needed. `test_sbx_path_confinement.py` (Step 8) proves absolute/`..` `cwd`
+never reaches `SbxSandboxRuntime` at all (rejected at `ExecRequest`
+construction) and a `cwd` symlink escape is rejected by `resolve_within`
+before any `sbx exec` call - and documents, as current scope rather than a
+gap, that only `cwd` is checked this way; a symlink named as a command
+*argument* is forwarded unexamined (verified safe anyway by the real
+backend's mount isolation in `test_sbx_filesystem_isolation.py`).
 
 `tests/external/` (marked `external` + `sbx`, excluded from the default run
 - `uv run pytest -m sbx`; requires `sbx login` and a global network policy
@@ -55,7 +63,9 @@ backend:
 - `test_sbx_filesystem_isolation.py` — only the mounted workspace is visible:
   sibling directories, `.env`, a source-tree sentinel, `..` traversal, and
   parent-directory listing are all confirmed unavailable, using a fixture
-  deliberately outside the AgentScope repo.
+  deliberately outside the AgentScope repo. Also confirms (Step 8) that a
+  symlink inside the workspace pointing outside it cannot be followed -
+  the sandbox's own mount means the target path doesn't exist there at all.
 
 Full black-box security tests (path-attack argv forms, network, timeout) are
 Step 15.
