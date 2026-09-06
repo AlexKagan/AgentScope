@@ -84,6 +84,7 @@ pythonpath = ["."]
 markers = [
     "external: talks to a real external service; excluded from the default run",
     "phoenix: emits a trace to a real Arize Phoenix endpoint (implies external)",
+    "sbx: exercises a real sbx (Docker Sandboxes) sandbox (implies external)",
 ]
 
 [tool.coverage.run]

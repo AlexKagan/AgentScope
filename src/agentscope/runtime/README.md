@@ -41,7 +41,16 @@ normalization (mapping every `sbx`/subprocess failure mode) is Step 13.
 `test_sbx_sandbox_runtime.py`; `tests/contract/test_sandbox_runtime_contract.py`.
 A unit test greps `environment.py` to prove it never reads `os.environ`.
 `test_sbx_cli.py` and `test_sbx_sandbox_runtime.py` use a fake subprocess
-runner - no real `sbx` needed. Real-backend black-box tests are Step 15.
+runner - no real `sbx` needed.
+
+`tests/external/test_sbx_execute.py` (marked `external` + `sbx`, excluded
+from the default run - `uv run pytest -m sbx`) exercises `execute()` against
+a real `sbx` sandbox: stdout/stderr capture, exit-code fidelity, argument
+boundaries surviving real subprocess invocation, `cwd` handling, and
+cross-command workspace sharing. Requires `sbx login` and a global network
+policy already initialized (`docs/findings/sbx-cli.md`). Full black-box
+security tests (secret isolation, path escapes, network, timeout) are
+Step 15.
 
 ## Telemetry
 None emitted in Phase 0.
@@ -53,5 +62,13 @@ confined to the task workspace. Phase 0 proves these with policy tests; Phase 1A
 adds black-box assertions from inside the real sandbox.
 
 ## Deferred work
-Concrete Docker backend, verified process termination / resource limits /
-network isolation / mount behavior — Phase 1A/2.
+Verified process termination / resource limits / network isolation — later
+Phase 1A.1 steps (9, 11).
+
+**Known gap (Step 6, deliberately deferred):** `SANDBOX_BASE_ENV["HOME"]` is
+`"/workspace"`, but the real `sbx` backend mounts the workspace at its own
+host-mirrored absolute path — `/workspace` does not exist inside a real
+sandbox at all (see `docs/findings/sbx-cli.md`). Nothing currently wires
+`build_sandbox_environment()`'s output into `SbxSandboxRuntime`, so this is
+latent, not active. Whoever adds that wiring must not forward `HOME`
+unconditionally for this backend.

@@ -64,6 +64,23 @@ This contradicts the current `SANDBOX_BASE_ENV["HOME"] = "/workspace"` and
 assume a fixed `/workspace` path is meaningful inside the real backend unless
 we deliberately re-mount there).
 
+**⚠️ Confirmed (Step 6):** `/workspace` does not exist at all in the real
+`shell` agent's sandbox image (`ls /workspace` → "No such file or
+directory"). The container's own real default is `HOME=/home/agent`. If a
+caller ever runs `build_sandbox_environment()` with its current defaults and
+feeds the result straight into `SbxSandboxRuntime.execute()`, it will emit
+`-e HOME=/workspace`, silently overriding a working `$HOME` with a path that
+doesn't exist — breaking anything that writes through `$HOME` (pip/npm/git
+caches, etc.). Nothing in the codebase does this yet (no caller currently
+wires `build_sandbox_environment()`'s output into the `sbx` backend), so this
+is a **latent gap, not an active bug** — but whoever adds the first caller
+that does (likely a future tool layer) must either stop forwarding `HOME`
+unconditionally for this backend, or set it to the workspace's real
+(host-mirrored) absolute path instead of the literal string `"/workspace"`.
+Tracked, not fixed, as of Step 6 — deliberately deferred per team decision
+(the fix belongs with whichever step first performs that wiring, not with
+Phase 0's backend-agnostic `environment.py`).
+
 Host↔sandbox file visibility is immediate and bidirectional: a file written
 from the host is instantly readable from inside the sandbox, and a file
 written from inside the sandbox is instantly visible via a normal host `cat`.
