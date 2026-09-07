@@ -47,6 +47,9 @@ def test_execute_success(runtime: SbxSandboxRuntime) -> None:
     assert result.exit_code == 0
     assert result.stdout == b"42\n"
     assert result.stderr == b""
+    # duration_s must reflect a real elapsed sbx exec call, not the silent
+    # 0.0 default every ExecResult used to carry regardless of outcome.
+    assert result.duration_s > 0
 
 
 def test_execute_captures_stdout(runtime: SbxSandboxRuntime) -> None:

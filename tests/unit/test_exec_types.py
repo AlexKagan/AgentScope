@@ -16,6 +16,21 @@ def test_minimal_valid_request() -> None:
     assert req.env == {}
 
 
+def test_default_timeout_is_none_meaning_use_backend_default() -> None:
+    # Phase 1A.1: a request doesn't carry its own hardcoded timeout default -
+    # None means "use whatever default the backend's own config declares"
+    # (e.g. SbxRuntimeConfig.default_command_timeout_s). An explicit override
+    # still works normally.
+    assert ExecRequest(command=("echo", "hi")).timeout_s is None
+    assert ExecRequest(command=("echo", "hi"), timeout_s=5.0).timeout_s == 5.0
+
+
+@pytest.mark.parametrize("timeout_s", [0, -1, -0.001])
+def test_explicit_nonpositive_timeout_still_rejected(timeout_s: float) -> None:
+    with pytest.raises(RuntimeContractError):
+        ExecRequest(command=("echo", "hi"), timeout_s=timeout_s)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

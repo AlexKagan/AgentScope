@@ -15,6 +15,8 @@ scripted double.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import time
 
 import pytest
@@ -24,6 +26,13 @@ from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecStatus
 from agentscope.runtime.sbx import SbxRuntimeConfig, SbxSandboxRuntime
 from agentscope.runtime.workspace import WorkspaceRoot
+
+
+def _real_sandbox_names() -> set[str]:
+    completed = subprocess.run(["sbx", "ls", "--json"], capture_output=True, timeout=15, check=True)
+    data = json.loads(completed.stdout)
+    return {sb["name"] for sb in data.get("sandboxes", [])}
+
 
 pytestmark = [pytest.mark.external, pytest.mark.sbx]
 
@@ -87,3 +96,17 @@ def test_runtime_is_invalid_after_timeout_against_real_backend(
 
     with pytest.raises(SandboxClosedError):
         runtime.execute(ExecRequest(command=("echo", "too late")))
+
+
+def test_close_after_timeout_removes_the_real_sandbox(workspace: WorkspaceRoot) -> None:
+    # INVALID (stopped by the timeout handler) is not CLOSED (removed) - this
+    # proves close() still performs real cleanup from that state, verified
+    # through an independent channel (sbx ls), not just our own bookkeeping.
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), workspace)
+    name = runtime.name
+    timeout_result = runtime.execute(ExecRequest(command=("sh", "-c", "sleep 999"), timeout_s=2.0))
+    assert timeout_result.status is ExecStatus.TIMED_OUT
+    assert name in _real_sandbox_names()  # stopped, but still exists
+
+    runtime.close()
+    assert name not in _real_sandbox_names()

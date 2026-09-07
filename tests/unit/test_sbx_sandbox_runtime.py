@@ -10,6 +10,7 @@ in the black-box suite (Step 15).
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -23,17 +24,21 @@ from agentscope.runtime.sbx import SbxRuntimeConfig, SbxSandboxRuntime
 
 
 class _ScriptedSbxRunner:
-    """Routes fake `sbx` responses by subcommand; records every call."""
+    """Routes fake `sbx` responses by subcommand; records every call and the
+    ``timeout`` each was invoked with."""
 
-    def __init__(self, *, create_returncode: int = 0) -> None:
+    def __init__(self, *, create_returncode: int = 0, exec_delay_s: float = 0.0) -> None:
         self.calls: list[list[str]] = []
+        self.timeouts: list[float | None] = []
         self._create_returncode = create_returncode
+        self._exec_delay_s = exec_delay_s
 
     def __call__(
         self, argv: Sequence[str], *, timeout: float | None
     ) -> subprocess.CompletedProcess[bytes]:
         argv = list(argv)
         self.calls.append(argv)
+        self.timeouts.append(timeout)
         subcommand = argv[1]  # argv[0] is always the "sbx" binary name
         if subcommand == "create":
             stderr = b"" if self._create_returncode == 0 else b"boom: creation failed"
@@ -41,6 +46,8 @@ class _ScriptedSbxRunner:
                 args=(), returncode=self._create_returncode, stdout=b"", stderr=stderr
             )
         if subcommand == "exec":
+            if self._exec_delay_s:
+                time.sleep(self._exec_delay_s)
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"ok\n", stderr=b"")
         if subcommand in ("stop", "rm"):
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
@@ -48,6 +55,10 @@ class _ScriptedSbxRunner:
 
     def calls_for(self, subcommand: str) -> list[list[str]]:
         return [c for c in self.calls if c[1] == subcommand]
+
+    def timeout_for(self, subcommand: str) -> float | None:
+        (index,) = [i for i, c in enumerate(self.calls) if c[1] == subcommand]
+        return self.timeouts[index]
 
 
 def _runtime(fake_workspace: object, runner: _ScriptedSbxRunner) -> SbxSandboxRuntime:
@@ -98,6 +109,141 @@ def test_execute_returns_completed_result(fake_workspace: object) -> None:
     result = runtime.execute(ExecRequest(command=("echo", "hi")))
     assert result.status is ExecStatus.COMPLETED
     assert result.exit_code == 0
+
+
+def test_execute_records_duration(fake_workspace: object) -> None:
+    # A deterministic, non-flaky proxy for "duration reflects real elapsed
+    # time": the fake exec call sleeps a known amount, so duration_s must be
+    # at least that much rather than the previous silent default of 0.0.
+    runner = _ScriptedSbxRunner(exec_delay_s=0.05)
+    runtime = _runtime(fake_workspace, runner)
+    result = runtime.execute(ExecRequest(command=("echo", "hi")))
+    assert result.duration_s >= 0.05
+
+
+def test_execute_uses_config_default_timeout_when_request_omits_it(
+    fake_workspace: object,
+) -> None:
+    runner = _ScriptedSbxRunner()
+    config = SbxRuntimeConfig(default_command_timeout_s=17.5)
+    runtime = SbxSandboxRuntime(config, fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    runtime.execute(ExecRequest(command=("echo", "hi")))  # timeout_s left as None
+    assert runner.timeout_for("exec") == 17.5
+
+
+def test_execute_request_timeout_overrides_config_default(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner()
+    config = SbxRuntimeConfig(default_command_timeout_s=17.5)
+    runtime = SbxSandboxRuntime(config, fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    runtime.execute(ExecRequest(command=("echo", "hi"), timeout_s=3.0))
+    assert runner.timeout_for("exec") == 3.0
+
+
+def test_create_uses_configured_create_timeout(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner()
+    config = SbxRuntimeConfig(create_timeout_s=42.0)
+    SbxSandboxRuntime(config, fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    assert runner.timeout_for("create") == 42.0
+
+
+def test_close_uses_configured_cleanup_timeout(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner()
+    config = SbxRuntimeConfig(cleanup_timeout_s=13.0)
+    runtime = SbxSandboxRuntime(config, fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    runtime.close()
+    assert runner.timeout_for("rm") == 13.0
+
+
+class _FixedOutputRunner:
+    """Fake runner returning caller-supplied stdout/stderr for every `exec`."""
+
+    def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"") -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+
+    def __call__(
+        self, argv: Sequence[str], *, timeout: float | None
+    ) -> subprocess.CompletedProcess[bytes]:
+        subcommand = list(argv)[1]
+        if subcommand == "create":
+            return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
+        if subcommand == "exec":
+            return subprocess.CompletedProcess(
+                args=(), returncode=0, stdout=self._stdout, stderr=self._stderr
+            )
+        return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
+
+
+def test_oversized_stdout_is_truncated_to_max_output_bytes(fake_workspace: object) -> None:
+    full_stdout = b"x" * 1000
+    runner = _FixedOutputRunner(stdout=full_stdout)
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("echo", "big"), max_output_bytes=100))
+    assert result.truncated is True
+    assert len(result.stdout) == 100
+    assert result.stdout == full_stdout[:100]
+
+
+def test_oversized_stderr_is_truncated_and_flagged(fake_workspace: object) -> None:
+    full_stderr = b"e" * 1000
+    runner = _FixedOutputRunner(stderr=full_stderr)
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("echo", "big"), max_output_bytes=100))
+    assert result.truncated is True
+    assert len(result.stderr) == 100
+    assert result.stderr == full_stderr[:100]
+    # stdout was empty and well within the limit - only stderr triggered truncation.
+    assert result.stdout == b""
+
+
+def test_output_within_limit_is_not_truncated(fake_workspace: object) -> None:
+    runner = _FixedOutputRunner(stdout=b"small", stderr=b"also small")
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("echo", "small"), max_output_bytes=1000))
+    assert result.truncated is False
+    assert result.stdout == b"small"
+    assert result.stderr == b"also small"
+
+
+class _MissingBinaryOnExecRunner:
+    """`create` succeeds; `exec` fails as if the local `sbx` binary vanished."""
+
+    def __call__(
+        self, argv: Sequence[str], *, timeout: float | None
+    ) -> subprocess.CompletedProcess[bytes]:
+        subcommand = list(argv)[1]
+        if subcommand == "create":
+            return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
+        raise FileNotFoundError("sbx: command not found")
+
+
+class _MissingBinaryAlwaysRunner:
+    """Every call fails as if the local `sbx` binary were never installed."""
+
+    def __call__(
+        self, argv: Sequence[str], *, timeout: float | None
+    ) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError("sbx: command not found")
+
+
+def test_missing_sbx_binary_at_creation_raises_creation_error(fake_workspace: object) -> None:
+    with pytest.raises(SandboxCreationError):
+        SbxSandboxRuntime(
+            SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=_MissingBinaryAlwaysRunner())
+        )  # type: ignore[arg-type]
+
+
+def test_missing_sbx_binary_at_execute_is_infra_failure_not_raised(fake_workspace: object) -> None:
+    # Unlike creation (which has no ExecResult to carry the failure in), a
+    # missing binary discovered during execute() is a normal, representable
+    # INFRA_FAILURE outcome - not an exception (see ExecStatus's own docstring).
+    runtime = SbxSandboxRuntime(
+        SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=_MissingBinaryOnExecRunner())
+    )  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("echo", "hi")))
+    assert result.status is ExecStatus.INFRA_FAILURE
+    assert result.exit_code is None
+    assert "sbx" in result.message.lower() or "not found" in result.message.lower()
 
 
 def test_close_removes_sandbox(fake_workspace: object) -> None:

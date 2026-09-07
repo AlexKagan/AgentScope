@@ -17,12 +17,15 @@ class ExecRequest:
 
     ``cwd`` is workspace-relative; ``env`` is already filtered by the caller
     (see :func:`agentscope.runtime.environment.build_sandbox_environment`).
+    ``timeout_s`` of ``None`` means "use the backend's own configured
+    default" (e.g. ``SbxRuntimeConfig.default_command_timeout_s``) rather than
+    a value hardcoded into this backend-independent type.
     """
 
     command: tuple[str, ...]
     cwd: str = "."
     env: Mapping[str, str] = field(default_factory=dict)
-    timeout_s: float = 30.0
+    timeout_s: float | None = None
     max_output_bytes: int = 1_000_000
 
     def __post_init__(self) -> None:
@@ -41,7 +44,7 @@ class ExecRequest:
 
         object.__setattr__(self, "env", {str(k): str(v) for k, v in self.env.items()})
 
-        if self.timeout_s <= 0:
+        if self.timeout_s is not None and self.timeout_s <= 0:
             raise RuntimeContractError("timeout_s must be > 0")
         if self.max_output_bytes <= 0:
             raise RuntimeContractError("max_output_bytes must be > 0")

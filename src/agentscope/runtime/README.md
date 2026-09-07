@@ -13,13 +13,13 @@ boundary that invokes the local `sbx` binary.
 | Symbol | Contract |
 |---|---|
 | `SandboxRuntime` (Protocol) | `workspace: WorkspaceRoot`; `execute(ExecRequest) -> ExecResult`; `close() -> None` (idempotent — added Phase 1A.1, ADR 0004 amendment). No implicit host env, no unrestricted host path. |
-| `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); `env` coerced to `str`→`str` and assumed already filtered; positive `timeout_s` / `max_output_bytes`. |
+| `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); `env` coerced to `str`→`str` and assumed already filtered; `timeout_s` is `float \| None` (`None` = "use the backend's own configured default", e.g. `SbxRuntimeConfig.default_command_timeout_s` — changed from a hardcoded `30.0` in Phase 1A.1 once that config field was found to be dead; an explicit value must still be `> 0`); positive `max_output_bytes`. |
 | `ExecResult` / `ExecStatus` | Frozen. `COMPLETED` carries `exit_code`; `TIMED_OUT` / `INFRA_FAILURE` must not. `truncated` flags output-limit hits. |
 | `build_sandbox_environment` | Empty baseline (`SANDBOX_BASE_ENV` literals) + allowlisted requests only. Values literal, never interpolated. Never reads `os.environ`. |
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
-| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent (ADR 0011). |
+| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`; resolves the effective timeout as `request.timeout_s if not None else config.default_command_timeout_s`; records `duration_s` around the `sbx exec` call on every returned `ExecResult` (`COMPLETED`, `TIMED_OUT`, and `INFRA_FAILURE` alike); truncates `stdout`/`stderr` independently to `max_output_bytes`, setting `truncated=True` if either stream hit the limit. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent (ADR 0011). |
 | `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` adds a sandbox-scoped `--deny-network "**"` whenever `deny_network=True` (the default) - confirmed to block all egress the same way as a global deny-all policy, but without depending on it. `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
@@ -61,7 +61,15 @@ row is marked `external` + `sbx` and excluded from the default run, like
 every other real-backend test).
 A unit test greps `environment.py` to prove it never reads `os.environ`.
 All of the `test_sbx_*.py` unit modules use a fake subprocess runner - no
-real `sbx` needed. `test_sbx_path_confinement.py` (Step 8) proves
+real `sbx` needed. `test_sbx_sandbox_runtime.py` also covers what a
+post-implementation audit found missing: `duration_s` is actually populated
+(not silently `0.0`), `default_command_timeout_s` genuinely reaches `SbxCli`
+when a request omits `timeout_s` (and a request override still wins),
+`create_timeout_s`/`cleanup_timeout_s` reach their respective calls,
+`max_output_bytes` truncation is correct and independent per stream, and a
+missing `sbx` binary is handled correctly at both creation
+(`SandboxCreationError`) and execute time (`ExecStatus.INFRA_FAILURE`, not
+raised). `test_sbx_path_confinement.py` (Step 8) proves
 absolute/`..` `cwd` never reaches `SbxSandboxRuntime` at all (rejected at
 `ExecRequest` construction) and a `cwd` symlink escape is rejected by
 `resolve_within` before any `sbx exec` call - and documents, as current
@@ -76,8 +84,9 @@ command timeout issues `sbx stop` and moves the runtime to `INVALID`.
 already initialized, `docs/findings/sbx-cli.md`) exercises the real `sbx`
 backend:
 - `test_sbx_execute.py` — stdout/stderr capture, exit-code fidelity, argument
-  boundaries surviving real subprocess invocation, `cwd` handling, and
-  cross-command workspace sharing.
+  boundaries surviving real subprocess invocation, `cwd` handling,
+  cross-command workspace sharing, and (post-audit) that `duration_s` is a
+  real positive value, not the silent `0.0` every result used to carry.
 - `test_sbx_environment_isolation.py` — a host-only secret is never inherited;
   an explicitly allowlisted variable does reach the sandbox.
 - `test_sbx_filesystem_isolation.py` — only the mounted workspace is visible:
@@ -89,8 +98,10 @@ backend:
 - `test_sbx_timeout.py` (Step 9) — replicates the Step 1 spike's heartbeat
   methodology through the real `execute()` path: after a command times out,
   a continuously-updated file inside the workspace is confirmed to actually
-  stop changing (not just that the local wait gave up), and the runtime is
-  confirmed unusable for further `execute()` calls afterward.
+  stop changing (not just that the local wait gave up), the runtime is
+  confirmed unusable for further `execute()` calls afterward, and (post-audit)
+  `close()` from that `INVALID` state is confirmed to actually remove the
+  sandbox from `sbx ls` — not just the fake-backed version of that check.
 - `test_sbx_resource_limits.py` (Step 10) — `cpu_limit`/`memory_limit` are
   confirmed actually applied (`nproc`, `/proc/meminfo`) through the real
   `SbxSandboxRuntime`, not just the raw CLI. Deliberately no OOM test.

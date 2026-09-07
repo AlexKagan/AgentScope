@@ -15,6 +15,7 @@ in a usable state - there is no separate "half-initialized" state to leak.
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum, StrEnum
@@ -179,11 +180,19 @@ class SbxSandboxRuntime:
         if self._state is not _State.READY:
             raise SandboxClosedError(f"sandbox {self._name!r} is closed or invalidated")
 
+        timeout_s = (
+            request.timeout_s
+            if request.timeout_s is not None
+            else self._config.default_command_timeout_s
+        )
+
         absolute_cwd = resolve_within(self._workspace, request.cwd)
         argv = SbxCli.build_exec_argv(
             self._name, request.command, cwd=str(absolute_cwd), env=request.env
         )
-        cli_result = self._cli.run(argv, timeout_s=request.timeout_s)
+        started_at = time.monotonic()
+        cli_result = self._cli.run(argv, timeout_s=timeout_s)
+        duration_s = time.monotonic() - started_at
 
         if cli_result.timed_out:
             # Killing the local `sbx exec` process (already done by the local
@@ -195,16 +204,24 @@ class SbxSandboxRuntime:
                 SbxCli.build_stop_argv(self._name), timeout_s=self._config.cleanup_timeout_s
             )
             self._state = _State.INVALID
-            return ExecResult(status=ExecStatus.TIMED_OUT, message="command exceeded timeout_s")
+            return ExecResult(
+                status=ExecStatus.TIMED_OUT,
+                message="command exceeded timeout_s",
+                duration_s=duration_s,
+            )
         if cli_result.error is not None:
-            return ExecResult(status=ExecStatus.INFRA_FAILURE, message=cli_result.error)
+            return ExecResult(
+                status=ExecStatus.INFRA_FAILURE, message=cli_result.error, duration_s=duration_s
+            )
 
         if cli_result.returncode is None:
             # Neither timed_out nor error was set, yet there is no exit code -
             # an sbx response shape we have not observed; treat it as an
             # infra failure rather than fabricating a COMPLETED result.
             return ExecResult(
-                status=ExecStatus.INFRA_FAILURE, message="sbx exec returned no exit code"
+                status=ExecStatus.INFRA_FAILURE,
+                message="sbx exec returned no exit code",
+                duration_s=duration_s,
             )
 
         stdout, stdout_truncated = _truncate(cli_result.stdout, request.max_output_bytes)
@@ -215,6 +232,7 @@ class SbxSandboxRuntime:
             stdout=stdout,
             stderr=stderr,
             truncated=stdout_truncated or stderr_truncated,
+            duration_s=duration_s,
         )
 
     def close(self) -> None:
