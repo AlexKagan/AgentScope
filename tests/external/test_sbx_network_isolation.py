@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from agentscope.runtime.errors import DisallowedEnvVarError
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.sbx import NetworkPolicy, SbxRuntimeConfig, SbxSandboxRuntime
 from agentscope.runtime.workspace import WorkspaceRoot
@@ -63,15 +64,14 @@ def test_network_policy_cannot_be_overridden_by_command_env(
     # Egress is blocked by the sandbox's own creation-time policy, not by
     # anything in the process environment - so no combination of explicit
     # env values handed to execute() can lift it.
-    result = runtime.execute(
-        ExecRequest(
-            command=(
-                "sh",
-                "-c",
-                'curl -s -m 5 -o /dev/null -w "%{http_code}" https://example.com',
-            ),
-            env={"HTTP_PROXY": "", "NO_PROXY": "", "https_proxy": ""},
+    with pytest.raises(DisallowedEnvVarError):
+        runtime.execute(
+            ExecRequest(
+                command=(
+                    "sh",
+                    "-c",
+                    'curl -s -m 5 -o /dev/null -w "%{http_code}" https://example.com',
+                ),
+                env={"HTTP_PROXY": "", "NO_PROXY": "", "https_proxy": ""},
+            )
         )
-    )
-    assert result.exit_code == 0
-    assert result.stdout.decode().strip() != "200"

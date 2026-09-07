@@ -17,11 +17,17 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 
-from agentscope.runtime._sbx_cli import SbxCli
-from agentscope.runtime.errors import RuntimeContractError, SandboxClosedError, SandboxCreationError
+from agentscope.runtime._sbx_cli import SbxCli, SbxCliResult
+from agentscope.runtime.environment import DEFAULT_ENV_ALLOWLIST, build_sandbox_environment
+from agentscope.runtime.errors import (
+    RuntimeContractError,
+    SandboxCleanupError,
+    SandboxClosedError,
+    SandboxCreationError,
+)
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecResult, ExecStatus
 from agentscope.runtime.workspace import WorkspaceRoot, resolve_within
@@ -71,18 +77,28 @@ class SbxRuntimeConfig:
     log, serialize, or include in telemetry attributes.
     """
 
-    template: str | None = None
     cpu_limit: int = 1
     memory_limit: str = "1g"
     sandbox_name_prefix: str = "agentscope"
     network_policy: NetworkPolicy = NetworkPolicy.DISABLED
+    env_allowlist: frozenset[str] = field(default_factory=lambda: DEFAULT_ENV_ALLOWLIST)
     create_timeout_s: float = 60.0
     default_command_timeout_s: float = 30.0
     cleanup_timeout_s: float = 30.0
 
     def __post_init__(self) -> None:
-        if self.template is not None and not self.template.strip():
-            raise RuntimeContractError("template must not be blank when provided")
+        try:
+            policy = NetworkPolicy(self.network_policy)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeContractError(
+                f"unsupported network_policy: {self.network_policy!r}"
+            ) from exc
+        object.__setattr__(self, "network_policy", policy)
+
+        if not isinstance(self.env_allowlist, frozenset) or not all(
+            isinstance(name, str) and name for name in self.env_allowlist
+        ):
+            raise RuntimeContractError("env_allowlist must be a frozenset of non-empty strings")
 
         if self.cpu_limit <= 0:
             raise RuntimeContractError(f"cpu_limit must be > 0, got {self.cpu_limit!r}")
@@ -132,11 +148,10 @@ class SbxSandboxRuntime:
     A command timeout burns the whole sandbox rather than just that command
     (see docs/findings/sbx-cli.md): the spike proved that killing the local
     ``sbx exec`` process does not stop the remote command - only ``sbx stop``
-    does. So ``execute()`` follows a timeout with ``sbx stop`` (best-effort)
-    and moves to the ``INVALID`` state: no further ``execute()`` calls are
-    accepted (``SandboxClosedError``), but ``close()`` still performs the
-    final ``sbx rm -f`` when the caller eventually calls it. This is Case B
-    from the plan's Step 9 - proven, not assumed, by the Step 1 spike.
+    does. ``execute()`` therefore requires a successful ``sbx stop`` before
+    reporting ``TIMED_OUT``. If stop fails it forces removal; if neither can
+    confirm termination, it reports ``INFRA_FAILURE``. Cleanup failures remain
+    retryable through ``close()``.
     """
 
     def __init__(
@@ -172,9 +187,16 @@ class SbxSandboxRuntime:
         )
         result = self._cli.run(argv, timeout_s=self._config.create_timeout_s)
         if result.error is not None or result.timed_out or result.returncode != 0:
-            self._state = _State.CLOSED  # nothing was created; close() must not try to remove it
             detail = result.error or result.stderr.decode("utf-8", errors="replace").strip()
-            raise SandboxCreationError(f"failed to create sandbox {self._name!r}: {detail}")
+            cleanup = self._cli.run(
+                SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
+            )
+            self._state = _State.CLOSED
+            cleanup_detail = _cli_failure_detail(cleanup)
+            message = f"failed to create sandbox {self._name!r}: {detail or 'unknown error'}"
+            if cleanup_detail is not None:
+                message += f"; compensating removal was not confirmed: {cleanup_detail}"
+            raise SandboxCreationError(message)
 
     def execute(self, request: ExecRequest) -> ExecResult:
         if self._state is not _State.READY:
@@ -187,9 +209,10 @@ class SbxSandboxRuntime:
         )
 
         absolute_cwd = resolve_within(self._workspace, request.cwd)
-        argv = SbxCli.build_exec_argv(
-            self._name, request.command, cwd=str(absolute_cwd), env=request.env
+        env = build_sandbox_environment(
+            request.env, allowlist=self._config.env_allowlist, strict=True
         )
+        argv = SbxCli.build_exec_argv(self._name, request.command, cwd=str(absolute_cwd), env=env)
         started_at = time.monotonic()
         cli_result = self._cli.run(argv, timeout_s=timeout_s)
         duration_s = time.monotonic() - started_at
@@ -197,13 +220,30 @@ class SbxSandboxRuntime:
         if cli_result.timed_out:
             # Killing the local `sbx exec` process (already done by the local
             # subprocess timeout) does not stop the remote command - only
-            # `sbx stop` does (docs/findings/sbx-cli.md). Best-effort: even if
-            # this itself fails, the runtime is still marked INVALID so no
-            # caller can mistake it for a safe-to-reuse sandbox.
-            self._cli.run(
+            # `sbx stop` does (docs/findings/sbx-cli.md). If stop fails, force
+            # removal; never report TIMED_OUT without confirmed termination.
+            stop_result = self._cli.run(
                 SbxCli.build_stop_argv(self._name), timeout_s=self._config.cleanup_timeout_s
             )
             self._state = _State.INVALID
+            if _cli_failure_detail(stop_result) is not None:
+                remove_result = self._cli.run(
+                    SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
+                )
+                remove_failure = _cli_failure_detail(remove_result)
+                duration_s = time.monotonic() - started_at
+                if remove_failure is None:
+                    self._state = _State.CLOSED
+                else:
+                    return ExecResult(
+                        status=ExecStatus.INFRA_FAILURE,
+                        message=(
+                            "command timed out, but remote termination could not be confirmed: "
+                            f"{remove_failure}"
+                        ),
+                        duration_s=duration_s,
+                    )
+            duration_s = time.monotonic() - started_at
             return ExecResult(
                 status=ExecStatus.TIMED_OUT,
                 message="command exceeded timeout_s",
@@ -238,7 +278,12 @@ class SbxSandboxRuntime:
     def close(self) -> None:
         if self._state is _State.CLOSED:
             return
-        self._cli.run(SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s)
+        result = self._cli.run(
+            SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
+        )
+        failure = _cli_failure_detail(result)
+        if failure is not None:
+            raise SandboxCleanupError(f"failed to remove sandbox {self._name!r}: {failure}")
         self._state = _State.CLOSED
 
 
@@ -246,3 +291,15 @@ def _truncate(data: bytes, max_bytes: int) -> tuple[bytes, bool]:
     if len(data) <= max_bytes:
         return data, False
     return data[:max_bytes], True
+
+
+def _cli_failure_detail(result: SbxCliResult) -> str | None:
+    """Return normalized failure detail for an ``SbxCliResult``, if any."""
+    if result.error is not None:
+        return result.error
+    if result.timed_out:
+        return "operation timed out"
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        return detail or f"sbx exited with code {result.returncode}"
+    return None

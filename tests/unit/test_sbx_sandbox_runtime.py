@@ -16,7 +16,12 @@ from collections.abc import Sequence
 import pytest
 
 from agentscope.runtime._sbx_cli import SbxCli
-from agentscope.runtime.errors import SandboxClosedError, SandboxCreationError
+from agentscope.runtime.errors import (
+    DisallowedEnvVarError,
+    SandboxCleanupError,
+    SandboxClosedError,
+    SandboxCreationError,
+)
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecStatus
 from agentscope.runtime.sandbox import SandboxRuntime
@@ -27,11 +32,18 @@ class _ScriptedSbxRunner:
     """Routes fake `sbx` responses by subcommand; records every call and the
     ``timeout`` each was invoked with."""
 
-    def __init__(self, *, create_returncode: int = 0, exec_delay_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        create_returncode: int = 0,
+        exec_delay_s: float = 0.0,
+        rm_returncodes: list[int] | None = None,
+    ) -> None:
         self.calls: list[list[str]] = []
         self.timeouts: list[float | None] = []
         self._create_returncode = create_returncode
         self._exec_delay_s = exec_delay_s
+        self._rm_returncodes = list(rm_returncodes or [0])
 
     def __call__(
         self, argv: Sequence[str], *, timeout: float | None
@@ -49,7 +61,13 @@ class _ScriptedSbxRunner:
             if self._exec_delay_s:
                 time.sleep(self._exec_delay_s)
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"ok\n", stderr=b"")
-        if subcommand in ("stop", "rm"):
+        if subcommand == "rm":
+            returncode = self._rm_returncodes.pop(0) if self._rm_returncodes else 0
+            stderr = b"remove failed" if returncode else b""
+            return subprocess.CompletedProcess(
+                args=(), returncode=returncode, stdout=b"", stderr=stderr
+            )
+        if subcommand == "stop":
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
         raise AssertionError(f"unexpected sbx subcommand: {subcommand!r}")
 
@@ -109,6 +127,24 @@ def test_execute_returns_completed_result(fake_workspace: object) -> None:
     result = runtime.execute(ExecRequest(command=("echo", "hi")))
     assert result.status is ExecStatus.COMPLETED
     assert result.exit_code == 0
+
+
+def test_execute_rejects_environment_not_allowed_by_runtime(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner()
+    runtime = _runtime(fake_workspace, runner)
+    with pytest.raises(DisallowedEnvVarError):
+        runtime.execute(ExecRequest(command=("env",), env={"SECRET": "value"}))
+    assert runner.calls_for("exec") == []
+
+
+def test_execute_passes_only_runtime_allowlisted_environment(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner()
+    config = SbxRuntimeConfig(env_allowlist=frozenset({"SAFE"}))
+    runtime = SbxSandboxRuntime(config, fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    runtime.execute(ExecRequest(command=("env",), env={"SAFE": "value"}))
+    (argv,) = runner.calls_for("exec")
+    assert "SAFE=value" in argv
+    assert not any(part.startswith("HOME=") for part in argv)
 
 
 def test_execute_records_duration(fake_workspace: object) -> None:
@@ -262,6 +298,15 @@ def test_close_is_idempotent(fake_workspace: object) -> None:
     assert len(runner.calls_for("rm")) == 1
 
 
+def test_close_failure_is_normalized_and_retryable(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner(rm_returncodes=[1, 0])
+    runtime = _runtime(fake_workspace, runner)
+    with pytest.raises(SandboxCleanupError, match="remove failed"):
+        runtime.close()
+    runtime.close()
+    assert len(runner.calls_for("rm")) == 2
+
+
 def test_execute_after_close_fails_deterministically(fake_workspace: object) -> None:
     runner = _ScriptedSbxRunner()
     runtime = _runtime(fake_workspace, runner)
@@ -274,10 +319,17 @@ def test_failed_creation_does_not_leave_runtime_ready(fake_workspace: object) ->
     runner = _ScriptedSbxRunner(create_returncode=1)
     with pytest.raises(SandboxCreationError):
         SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
-    # Creation failure must never attempt to run a command or remove a
-    # sandbox that was never successfully created.
+    # Creation failure compensates for a potentially partial remote creation.
     assert runner.calls_for("exec") == []
-    assert runner.calls_for("rm") == []
+    assert len(runner.calls_for("rm")) == 1
+
+
+def test_failed_creation_reports_unconfirmed_compensating_cleanup(
+    fake_workspace: object,
+) -> None:
+    runner = _ScriptedSbxRunner(create_returncode=1, rm_returncodes=[1])
+    with pytest.raises(SandboxCreationError, match="compensating removal was not confirmed"):
+        SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
 
 
 def test_workspace_property_exposes_configured_root(fake_workspace: object) -> None:

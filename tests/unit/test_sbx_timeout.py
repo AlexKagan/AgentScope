@@ -26,8 +26,10 @@ from agentscope.runtime.sbx import SbxRuntimeConfig, SbxSandboxRuntime
 class _TimeoutOnExecRunner:
     """Fake runner: `create`/`stop`/`rm` succeed; `exec` always times out locally."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, stop_returncode: int = 0, rm_returncode: int = 0) -> None:
         self.calls: list[list[str]] = []
+        self._stop_returncode = stop_returncode
+        self._rm_returncode = rm_returncode
 
     def __call__(
         self, argv: Sequence[str], *, timeout: float | None
@@ -37,6 +39,14 @@ class _TimeoutOnExecRunner:
         subcommand = argv[1]
         if subcommand == "exec":
             raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout or 0)
+        if subcommand == "stop":
+            return subprocess.CompletedProcess(
+                args=(), returncode=self._stop_returncode, stdout=b"", stderr=b"stop failed"
+            )
+        if subcommand == "rm":
+            return subprocess.CompletedProcess(
+                args=(), returncode=self._rm_returncode, stdout=b"", stderr=b"remove failed"
+            )
         return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
 
     def calls_for(self, subcommand: str) -> list[list[str]]:
@@ -83,4 +93,25 @@ def test_close_after_timeout_still_removes_the_sandbox(fake_workspace: object) -
     runtime.execute(ExecRequest(command=("sleep", "999"), timeout_s=0.01))
     runtime.close()
     runtime.close()
+    assert len(runner.calls_for("rm")) == 1
+
+
+def test_timeout_forces_removal_when_stop_fails(fake_workspace: object) -> None:
+    runner = _TimeoutOnExecRunner(stop_returncode=1)
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("sleep", "999"), timeout_s=0.01))
+    assert result.status is ExecStatus.TIMED_OUT
+    assert len(runner.calls_for("rm")) == 1
+    with pytest.raises(SandboxClosedError):
+        runtime.execute(ExecRequest(command=("true",)))
+
+
+def test_timeout_is_infra_failure_when_termination_cannot_be_confirmed(
+    fake_workspace: object,
+) -> None:
+    runner = _TimeoutOnExecRunner(stop_returncode=1, rm_returncode=1)
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("sleep", "999"), timeout_s=0.01))
+    assert result.status is ExecStatus.INFRA_FAILURE
+    assert "termination could not be confirmed" in result.message
     assert len(runner.calls_for("rm")) == 1

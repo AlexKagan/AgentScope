@@ -11,6 +11,7 @@ from agentscope.runtime.errors import (
     HostEnvLookupError,
     PathEscapeError,
     RuntimeContractError,
+    SandboxCleanupError,
 )
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecResult, ExecStatus
@@ -33,6 +34,7 @@ __all__ = [
     "NetworkPolicy",
     "PathEscapeError",
     "RuntimeContractError",
+    "SandboxCleanupError",
     "SandboxRuntime",
     "SbxRuntimeConfig",
     "WorkspaceRelativePath",

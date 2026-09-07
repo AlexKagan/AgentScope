@@ -57,29 +57,10 @@ not at a fixed mount point. E.g. mounting
 that same absolute path — there is no `/workspace` normalization done by
 `sbx` itself.
 
-This contradicts the current `SANDBOX_BASE_ENV["HOME"] = "/workspace"` and
-`PATH` assumptions in
-[`src/agentscope/runtime/environment.py`](../../src/agentscope/runtime/environment.py)
-— reconcile when wiring `SbxSandboxRuntime`'s environment construction (do not
-assume a fixed `/workspace` path is meaningful inside the real backend unless
-we deliberately re-mount there).
-
-**⚠️ Confirmed (Step 6):** `/workspace` does not exist at all in the real
-`shell` agent's sandbox image (`ls /workspace` → "No such file or
-directory"). The container's own real default is `HOME=/home/agent`. If a
-caller ever runs `build_sandbox_environment()` with its current defaults and
-feeds the result straight into `SbxSandboxRuntime.execute()`, it will emit
-`-e HOME=/workspace`, silently overriding a working `$HOME` with a path that
-doesn't exist — breaking anything that writes through `$HOME` (pip/npm/git
-caches, etc.). Nothing in the codebase does this yet (no caller currently
-wires `build_sandbox_environment()`'s output into the `sbx` backend), so this
-is a **latent gap, not an active bug** — but whoever adds the first caller
-that does (likely a future tool layer) must either stop forwarding `HOME`
-unconditionally for this backend, or set it to the workspace's real
-(host-mirrored) absolute path instead of the literal string `"/workspace"`.
-Tracked, not fixed, as of Step 6 — deliberately deferred per team decision
-(the fix belongs with whichever step first performs that wiring, not with
-Phase 0's backend-agnostic `environment.py`).
+`/workspace` does not exist in the real `shell` agent image; its native home is
+`/home/agent`. The backend therefore leaves `HOME` unset in its explicit base
+environment and retains the image's working default. Environment allowlisting
+is enforced inside `SbxSandboxRuntime.execute()`, not delegated to callers.
 
 Host↔sandbox file visibility is immediate and bidirectional: a file written
 from the host is instantly readable from inside the sandbox, and a file

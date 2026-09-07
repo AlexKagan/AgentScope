@@ -15,8 +15,8 @@ __all__ = ["ExecRequest"]
 class ExecRequest:
     """A fully specified, boundary-safe command execution request.
 
-    ``cwd`` is workspace-relative; ``env`` is already filtered by the caller
-    (see :func:`agentscope.runtime.environment.build_sandbox_environment`).
+    ``cwd`` is workspace-relative; ``env`` contains requested variables and is
+    validated against the concrete runtime's allowlist at execution time.
     ``timeout_s`` of ``None`` means "use the backend's own configured
     default" (e.g. ``SbxRuntimeConfig.default_command_timeout_s``) rather than
     a value hardcoded into this backend-independent type.

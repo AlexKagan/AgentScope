@@ -13,13 +13,13 @@ boundary that invokes the local `sbx` binary.
 | Symbol | Contract |
 |---|---|
 | `SandboxRuntime` (Protocol) | `workspace: WorkspaceRoot`; `execute(ExecRequest) -> ExecResult`; `close() -> None` (idempotent — added Phase 1A.1, ADR 0004 amendment). No implicit host env, no unrestricted host path. |
-| `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); `env` coerced to `str`→`str` and assumed already filtered; `timeout_s` is `float \| None` (`None` = "use the backend's own configured default", e.g. `SbxRuntimeConfig.default_command_timeout_s` — changed from a hardcoded `30.0` in Phase 1A.1 once that config field was found to be dead; an explicit value must still be `> 0`); positive `max_output_bytes`. |
+| `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); requested `env` coerced to `str`→`str` and validated by the runtime; `timeout_s` is `float \| None` (`None` = the backend default); positive `max_output_bytes`. |
 | `ExecResult` / `ExecStatus` | Frozen. `COMPLETED` carries `exit_code`; `TIMED_OUT` / `INFRA_FAILURE` must not. `truncated` flags output-limit hits. |
 | `build_sandbox_environment` | Empty baseline (`SANDBOX_BASE_ENV` literals) + allowlisted requests only. Values literal, never interpolated. Never reads `os.environ`. |
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
-| `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates `cpu_limit > 0`; `memory_limit` matches `<int><m\|g>` and is `>= 1 GiB` (the `sbx`-enforced floor, see `docs/findings/sbx-cli.md`); `sandbox_name_prefix` follows `sbx`'s own name rules (>=2 chars, starts alnum, `[A-Za-z0-9.-]`, not `"default"`); all timeouts `> 0`. Carries no secret material. |
-| `SbxSandboxRuntime` | One persistent `sbx` sandbox per instance: created eagerly in `__init__` (raises `SandboxCreationError` on failure — no half-created state), reused across every `execute()`, released by `close()` (idempotent). `execute()` translates the workspace-relative `cwd` via `resolve_within` before handing it to `sbx exec -w`; resolves the effective timeout as `request.timeout_s if not None else config.default_command_timeout_s`; records `duration_s` around the `sbx exec` call on every returned `ExecResult` (`COMPLETED`, `TIMED_OUT`, and `INFRA_FAILURE` alike); truncates `stdout`/`stderr` independently to `max_output_bytes`, setting `truncated=True` if either stream hit the limit. Internal states: `READY` → (on any command timeout) `INVALID` → (on `close()`) `CLOSED`. A timeout runs `sbx stop` (the only thing proven to actually kill the remote command — see findings) and moves to `INVALID`: further `execute()` calls raise `SandboxClosedError`, but `close()` still performs the real `sbx rm -f` and remains idempotent (ADR 0011). |
+| `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates resources, names, timeouts, and the environment allowlist. The serialized string `"disabled"` is normalized; every other network policy is rejected, so every constructible Phase 1A.1 configuration denies egress. Carries no secret material. |
+| `SbxSandboxRuntime` | One persistent sandbox per instance. It validates requested environment variables itself and compensates failed creation with forced removal. A timeout returns `TIMED_OUT` only after stop or removal confirms termination; otherwise it returns `INFRA_FAILURE`. `close()` raises `SandboxCleanupError` on failure and remains retryable, transitioning to `CLOSED` only after confirmed removal. |
 | `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` adds a sandbox-scoped `--deny-network "**"` whenever `deny_network=True` (the default) - confirmed to block all egress the same way as a global deny-all policy, but without depending on it. `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
@@ -32,7 +32,7 @@ boundary that invokes the local `sbx` binary.
 `PathEscapeError`, `DisallowedEnvVarError`, `HostEnvLookupError`; and
 `SandboxBackendError` (base `RuntimeError`, for sbx-backend infrastructure
 failures with no `ExecResult` to carry them) and its subclasses
-`SandboxCreationError`, `SandboxClosedError`.
+`SandboxCreationError`, `SandboxCleanupError`, `SandboxClosedError`.
 
 **Step 13 (error normalization) status:** nonzero exit codes are normal
 `ExecResult`s, not exceptions (Step 5); timeouts have distinct semantics via
@@ -151,11 +151,3 @@ entirely `sbx`-free (`pytest`'s default `-m 'not external'`).
 ## Deferred work
 Dynamic network allowlists and package-registry access remain out of scope
 for Phase 1A.1 entirely (see the implementation plan).
-
-**Known gap (Step 6, deliberately deferred):** `SANDBOX_BASE_ENV["HOME"]` is
-`"/workspace"`, but the real `sbx` backend mounts the workspace at its own
-host-mirrored absolute path — `/workspace` does not exist inside a real
-sandbox at all (see `docs/findings/sbx-cli.md`). Nothing currently wires
-`build_sandbox_environment()`'s output into `SbxSandboxRuntime`, so this is
-latent, not active. Whoever adds that wiring must not forward `HOME`
-unconditionally for this backend.

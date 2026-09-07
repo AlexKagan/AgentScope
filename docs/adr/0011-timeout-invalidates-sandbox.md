@@ -26,18 +26,18 @@ usable.
 
 ## Decision
 On a command timeout, `SbxSandboxRuntime.execute()`:
-1. Issues `sbx stop <sandbox>` (best-effort — attempted regardless of whether
-   it itself succeeds).
-2. Transitions the runtime to an internal `INVALID` state, distinct from
+1. Issues `sbx stop <sandbox>` and checks the result.
+2. If stop fails, attempts `sbx rm -f <sandbox>` as the termination fallback.
+3. Transitions the runtime to an internal `INVALID` state, distinct from
    `CLOSED`: the sandbox process is stopped but not yet removed.
-3. Returns `ExecResult(status=ExecStatus.TIMED_OUT, ...)` as before — the
-   result-type contract from Phase 0 is unchanged.
+4. Returns `TIMED_OUT` only after stop or removal confirms termination. If
+   neither succeeds, returns `INFRA_FAILURE` and preserves retryable cleanup.
 
 From `INVALID`, further `execute()` calls raise `SandboxClosedError`
 deterministically — the runtime cannot be silently reused after a timeout.
-`close()` still performs the real `sbx rm -f` from `INVALID` (not just from
-`READY`) and remains idempotent, so final cleanup is guaranteed regardless of
-which state a runtime timed out in.
+`close()` performs `sbx rm -f` from `INVALID` or `READY`. It transitions to
+`CLOSED` only after confirmed success; failures raise `SandboxCleanupError`
+and remain retryable.
 
 ## Consequences
 - A single command timing out burns the entire sandbox for the rest of that

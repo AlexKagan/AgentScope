@@ -26,8 +26,8 @@ class SandboxRuntime(Protocol):
     """An execution boundary for model-facing operations.
 
     Implementations must not accept an implicit host environment or an
-    unrestricted host path: ``request.env`` is already filtered and
-    ``request.cwd`` is workspace-relative.
+    unrestricted host path: implementations validate ``request.env`` against
+    their policy and require ``request.cwd`` to be workspace-relative.
     """
 
     @property

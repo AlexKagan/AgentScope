@@ -27,6 +27,23 @@ def test_sbx_config_defaults_network_disabled() -> None:
     assert SbxRuntimeConfig().network_policy is NetworkPolicy.DISABLED
 
 
+def test_sbx_config_normalizes_serialized_disabled_network_policy() -> None:
+    config = SbxRuntimeConfig(network_policy="disabled")  # type: ignore[arg-type]
+    assert config.network_policy is NetworkPolicy.DISABLED
+
+
+@pytest.mark.parametrize("network_policy", ["allow-all", "foo", None, False])
+def test_sbx_config_rejects_unsupported_network_policy(network_policy: object) -> None:
+    with pytest.raises(RuntimeContractError):
+        SbxRuntimeConfig(network_policy=network_policy)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("env_allowlist", [set(), frozenset({""}), frozenset({1})])
+def test_sbx_config_rejects_invalid_environment_allowlist(env_allowlist: object) -> None:
+    with pytest.raises(RuntimeContractError):
+        SbxRuntimeConfig(env_allowlist=env_allowlist)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("cpu_limit", [0, -1, -100])
 def test_sbx_config_rejects_nonpositive_cpu(cpu_limit: int) -> None:
     with pytest.raises(RuntimeContractError):

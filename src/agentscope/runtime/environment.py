@@ -26,7 +26,6 @@ DEFAULT_ENV_ALLOWLIST: frozenset[str] = frozenset({"LANG", "LC_ALL", "LC_CTYPE",
 
 # Sandbox-local literal values - not read from, and unrelated to, the host.
 SANDBOX_BASE_ENV: dict[str, str] = {
-    "HOME": "/workspace",
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "TMPDIR": "/tmp",  # noqa: S108 - sandbox-local path, not a host temp dir
 }

@@ -8,6 +8,7 @@ __all__ = [
     "PathEscapeError",
     "RuntimeContractError",
     "SandboxBackendError",
+    "SandboxCleanupError",
     "SandboxClosedError",
     "SandboxCreationError",
 ]
@@ -41,3 +42,11 @@ class SandboxCreationError(SandboxBackendError):
 
 class SandboxClosedError(SandboxBackendError):
     """Raised by any operation attempted on an already-``close()``d runtime."""
+
+
+class SandboxCleanupError(SandboxBackendError):
+    """Raised when a sandbox cannot be deterministically removed.
+
+    The owning runtime remains retryable: callers may invoke ``close()`` again
+    after the underlying infrastructure recovers.
+    """

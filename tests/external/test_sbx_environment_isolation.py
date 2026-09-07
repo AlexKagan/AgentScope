@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pytest
 
-from agentscope.runtime.environment import build_sandbox_environment
+from agentscope.runtime.errors import DisallowedEnvVarError
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.sbx import SbxRuntimeConfig, SbxSandboxRuntime
 from agentscope.runtime.workspace import WorkspaceRoot
@@ -43,7 +43,12 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> WorkspaceRoot:
 
 @pytest.fixture(scope="module")
 def runtime(workspace: WorkspaceRoot) -> SbxSandboxRuntime:
-    rt = SbxSandboxRuntime(SbxRuntimeConfig(), workspace)
+    rt = SbxSandboxRuntime(
+        SbxRuntimeConfig(
+            env_allowlist=frozenset({"LANG", "LC_ALL", "LC_CTYPE", "TZ", "AGENTSCOPE_SAFE_TEST"})
+        ),
+        workspace,
+    )
     yield rt
     rt.close()
 
@@ -67,15 +72,15 @@ def test_host_environment_is_not_inherited(
 
 
 def test_non_allowlisted_env_missing_inside_sandbox(runtime: SbxSandboxRuntime) -> None:
-    # build_sandbox_environment drops anything not on the allowlist by default.
-    env = build_sandbox_environment({"AGENTSCOPE_NOT_ALLOWED": "should-not-appear"})
-    assert "AGENTSCOPE_NOT_ALLOWED" not in env
-    assert _read_var(runtime, "AGENTSCOPE_NOT_ALLOWED", env=env) == "absent"
+    assert _read_var(runtime, "AGENTSCOPE_NOT_ALLOWED") == "absent"
 
 
 def test_explicit_allowlisted_env_present(runtime: SbxSandboxRuntime) -> None:
-    env = build_sandbox_environment(
-        {"AGENTSCOPE_SAFE_TEST": "value"},
-        allowlist=frozenset({"AGENTSCOPE_SAFE_TEST"}),
+    assert (
+        _read_var(runtime, "AGENTSCOPE_SAFE_TEST", env={"AGENTSCOPE_SAFE_TEST": "value"}) == "value"
     )
-    assert _read_var(runtime, "AGENTSCOPE_SAFE_TEST", env=env) == "value"
+
+
+def test_direct_non_allowlisted_environment_is_rejected(runtime: SbxSandboxRuntime) -> None:
+    with pytest.raises(DisallowedEnvVarError):
+        _read_var(runtime, "SECRET", env={"SECRET": "value"})
