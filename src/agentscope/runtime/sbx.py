@@ -150,6 +150,12 @@ class SbxSandboxRuntime:
     -> CLOSED``. There is no reachable "half-created" state: if sandbox
     creation fails, ``__init__`` raises and no instance is ever returned.
 
+    **Concurrency:** This runtime is **not thread-safe or async-safe**.
+    All calls to ``execute()`` and ``close()`` must be serialized. Concurrent
+    or overlapping invocations are not supported. Callers requiring parallel
+    command execution must construct separate runtime instances (separate
+    sandboxes).
+
     A command timeout burns the whole sandbox rather than just that command
     (see docs/findings/sbx-cli.md): the spike proved that killing the local
     ``sbx exec`` process does not stop the remote command - only ``sbx stop``

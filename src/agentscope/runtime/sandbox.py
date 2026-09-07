@@ -28,6 +28,15 @@ class SandboxRuntime(Protocol):
     Implementations must not accept an implicit host environment or an
     unrestricted host path: implementations validate ``request.env`` against
     their policy and require ``request.cwd`` to be workspace-relative.
+
+    **Phase 1A.1 amendment (ADR 0004):** The protocol now requires ``close()``.
+    Phase 0 originally defined only ``workspace`` and ``execute()``. The ``close()``
+    method was added in Phase 1A.1 because a sandbox is a stateful external
+    resource that must be deterministically released, and callers holding only
+    a ``SandboxRuntime`` reference need a way to guarantee cleanup without
+    type casts or introspection. All implementations must provide an idempotent
+    ``close()`` — subsequent calls after the first successful close are safe
+    and should be no-ops.
     """
 
     @property
@@ -40,5 +49,12 @@ class SandboxRuntime(Protocol):
         ...
 
     def close(self) -> None:
-        """Release the sandbox. Idempotent: calling this more than once is safe."""
+        """Release the sandbox. Idempotent: calling this more than once is safe.
+
+        Phase 1A.1 addition (ADR 0004 amendment). Implementations may raise
+        a subclass of ``SandboxBackendError`` if cleanup fails but remains
+        retryable (e.g., ``SandboxCleanupError``). Subsequent calls to
+        ``close()`` will retry cleanup; failures do not advance the runtime
+        to a "closed" state until confirmed success (or caller gives up).
+        """
         ...

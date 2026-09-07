@@ -151,3 +151,126 @@ entirely `sbx`-free (`pytest`'s default `-m 'not external'`).
 ## Deferred work
 Dynamic network allowlists and package-registry access remain out of scope
 for Phase 1A.1 entirely (see the implementation plan).
+
+## Open issues & verification gaps (Phase 1A.1 post-implementation audit)
+
+### Protocol & scope clarifications
+
+**File operations** — Step 12 of the implementation plan mentions `read_file`,
+`write_file`, `apply_patch`, `collect_artifacts` as potentially inherited from
+Phase 0. These are **not currently defined** in the `SandboxRuntime` protocol
+and are **not implemented in `SbxSandboxRuntime`**. File operations are
+intentionally deferred to Phase 1A/2 and will be defined in a separate protocol
+extension when needed. The mounted workspace is already accessible to callers
+via host-side file I/O; `sbx cp` is deliberately avoided (plan Step 12).
+
+**Concurrency semantics** — `SbxSandboxRuntime.execute()` is **not documented
+as thread-safe or async-safe**. Current implementation is single-threaded
+only: concurrent calls are not prevented at the type level, and behavior under
+concurrent access is undefined. **Documented as open issue**: callers must
+serialize all `execute()` calls to a single runtime instance. Parallel
+command execution requires constructing separate runtime instances (separate
+sandboxes). See `sbx.py` line 203–204.
+
+**Protocol version marking** — Phase 1A.1 amended `SandboxRuntime` by adding
+`close() -> None` (ADR 0004 amendment), retroactively changing Phase 0's
+contract. The protocol itself in `sandbox.py` does not mark this amendment
+explicitly. **Future**: add a protocol version constant or docstring noting
+the Phase 1A.1 amendment so future implementers don't miss the requirement.
+
+### Testing gaps
+
+**Resource limit override prevention** — `test_sbx_resource_limits.py` verifies
+limits are *observed* as applied inside the sandbox (via `nproc`, `/proc/meminfo`),
+but does not test whether application-level environment manipulation can
+circumvent them. For example, can a process set `GOMAXPROCS`, `JAVA_OPTS`, or
+other application-level resource hints to exceed the kernel limits? **Action:**
+add tests to `test_sbx_resource_limits.py` attempting `GOMAXPROCS` override,
+subprocess spawning beyond CPU limit, memory allocation patterns, and verify
+they remain bounded. This is a follow-up refinement; current tests prove limits
+are enforced at the sandbox layer.
+
+**Output truncation with both streams large** — `max_output_bytes` is applied
+independently to each stream, but there is no explicit test for the case where
+both stdout and stderr together exceed the limit. Unit tests at lines 226–245
+in `test_sbx_sandbox_runtime.py` cover independent truncation, but not the
+combined scenario. Current behavior: truncate stdout to `max_output_bytes`,
+*then* truncate stderr to `max_output_bytes` independently — the combined
+size may be `2 * max_output_bytes`. This is correct and documented in the code,
+but a test matching the combined case would improve clarity.
+
+**Timeout under real load** — Timeout tests use `sleep` (idle) or heartbeat
+(low I/O). Untested under stress:
+  - Heavy I/O (many writes)
+  - CPU-saturated work
+  - Memory pressure approaching limits
+  - Subprocess spawning
+  - DNS/network-attempt (even though egress is blocked)
+
+Current tests prove timeout *works*, but edge-case latency and prompt
+termination under load are unverified. Not a blocker; acceptable for Phase
+1A.1.
+
+**Network isolation extended cases** — `test_sbx_network_isolation.py` tests
+`curl` to external HTTPS. Untested:
+  - DNS resolution behavior (blocked, cached locally, or fails?)
+  - Non-standard outbound ports (only HTTP/HTTPS confirmed)
+  - Localhost/127.0.0.1 escape (can a command connect to host services?)
+
+Current test proves egress is blocked; extended cases remain Phase 1A/2
+hardening.
+
+**Python version baseline regression** — `EXPECTED_SANDBOX_PYTHON_VERSION =
+"3.14"` is hardcoded in `tests/external/test_sbx_execute.py` and documented
+in `docs/findings/sbx-cli.md`. The constant is only checked in the `@pytest.mark.sbx`
+suite, so default CI doesn't validate it. If the sandbox image is updated,
+the test fails clearly, but there's no automated sync between the constant
+and the findings doc. **Future**: consider centralizing the baseline version
+in `pyproject.toml` or `.python-version`-style config, with both tests and
+docs referencing it.
+
+### Workspace & diagnostics
+
+**Post-timeout workspace state** — When `execute()` returns `TIMED_OUT`, the
+sandbox is stopped (INVALID state). The workspace is preserved. Callers **should
+preserve the workspace for diagnostics** (partial results, logs, state from the
+interrupted command). If a new runtime is created, it can mount the same
+workspace, or callers can inspect files before cleanup. This is caller-owned;
+the runtime does not auto-cleanup.
+
+**Symlink-argument escape not validated by AgentScope** — `resolve_within()`
+rejects symlink escapes in `cwd`, but a symlink *named as a command argument*
+(e.g., `("cat", "/task/link-to-outside")`) is forwarded unexamined. Safety
+relies on `sbx`'s mount isolation: the symlink's target doesn't exist inside
+the sandbox. This is a dependency on external `sbx` behavior, not AgentScope's
+own validation (documented in `THREAT_MODEL.md` line 79). Acceptable for Phase
+1A.1; future sandboxes must maintain this isolation property.
+
+### Version pinning & reproducibility
+
+**Sandbox image and `sbx` CLI version** — `sbx-smoke.yml` pins `EXPECTED_SBX_VERSION:
+"v0.39.0"`. The implementation does not check the actual `sbx` version before
+creating a sandbox; developers running `uv run pytest -m sbx` with a different
+version locally will silently test against unverified behavior. **Best practice:**
+before running real-backend tests locally, verify `sbx version` matches `sbx-smoke.yml`.
+Future: `SbxSandboxRuntime` could emit a warning if the installed version doesn't
+match the verified baseline, but parsing `sbx version` output is fragile
+(undocumented format).
+
+### Close() retryability after partial failure
+
+**State transition unclear when removal fails** — `close()` raises `SandboxCleanupError`
+on failure and remains retryable (code line 282–283 in `sbx.py`). Internally,
+`_remove_failure()` checks `sbx ls --json` to confirm absence; if the sandbox
+persists or the list command fails, the failure is reported. The runtime does
+*not* transition to CLOSED until removal succeeds. This is correct — it remains
+retryable — but underdocumented. Callers should treat `SandboxCleanupError`
+as "try `close()` again; the runtime is still holding the sandbox." Document
+this in consumer code.
+
+---
+
+**Audit date**: Phase 1A.1 post-completion review. See git log for the commit
+completing Phase 1A.1 (e.g., "Complete Phase 1A.1: contract parity, CI, and docs").
+All items above are acceptable for Phase 1A.1; they represent follow-up
+refinements and extended test coverage for Phase 1A/2.
