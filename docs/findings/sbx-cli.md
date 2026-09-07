@@ -135,6 +135,26 @@ string building) as planned for the `_sbx_cli.py` boundary.
   (`/sys/fs/cgroup/memory.max`) were not present; use `/proc/meminfo` /
   `nproc` instead for any black-box resource-limit assertions.
 
+## Python version baseline (post-audit finding)
+
+The `shell` agent's sandbox image (`docker/sandbox-templates:shell-docker`)
+ships **Python 3.14.4**, confirmed via `sbx exec <sandbox> python3
+--version`. This matches the DoD requirement ("Python 3.14 remains the
+sandbox baseline"), but was initially true only by chance — nothing checked
+it. Now enforced by
+`tests/external/test_sbx_execute.py::test_sandbox_python_version_matches_expected_baseline`,
+which compares the sandbox's reported `major.minor` against the
+`EXPECTED_SANDBOX_PYTHON_VERSION` constant at the top of that file (currently
+`"3.14"`) and fails loudly on any mismatch — confirmed by deliberately
+setting it to `"3.13"` and observing a clear, actionable failure.
+
+**To change the required baseline** (e.g. to Python 3.15): update
+`EXPECTED_SANDBOX_PYTHON_VERSION` in `tests/external/test_sbx_execute.py`,
+re-run `uv run pytest -m sbx`, and update this note once the new version's
+behavior has been re-verified — do not just bump the constant to make the
+test pass without checking whether anything else in this findings doc
+depended on the old version.
+
 ## Network isolation
 
 Under the global `deny-all` policy, `curl https://example.com` from inside

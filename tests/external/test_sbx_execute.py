@@ -27,6 +27,13 @@ from agentscope.runtime.workspace import WorkspaceRoot
 
 pytestmark = [pytest.mark.external, pytest.mark.sbx]
 
+# The Python major.minor version AgentScope's sandbox image is expected to
+# run (design/DoD: "Python 3.14 remains the sandbox baseline"). This is the
+# single place to update when that requirement changes - e.g. bumping to
+# "3.15" - so the test below fails loudly on a mismatch instead of the
+# sandbox image silently drifting out from under an untested assumption.
+EXPECTED_SANDBOX_PYTHON_VERSION = "3.14"
+
 
 @pytest.fixture(scope="module")
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> WorkspaceRoot:
@@ -50,6 +57,21 @@ def test_execute_success(runtime: SbxSandboxRuntime) -> None:
     # duration_s must reflect a real elapsed sbx exec call, not the silent
     # 0.0 default every ExecResult used to carry regardless of outcome.
     assert result.duration_s > 0
+
+
+def test_sandbox_python_version_matches_expected_baseline(runtime: SbxSandboxRuntime) -> None:
+    result = runtime.execute(ExecRequest(command=("python3", "--version")))
+    assert result.exit_code == 0
+
+    reported = result.stdout.decode().strip().removeprefix("Python ")
+    major_minor = ".".join(reported.split(".")[:2])
+    assert major_minor == EXPECTED_SANDBOX_PYTHON_VERSION, (
+        f"sandbox image reports Python {reported!r}, expected "
+        f"{EXPECTED_SANDBOX_PYTHON_VERSION}.x - update "
+        "EXPECTED_SANDBOX_PYTHON_VERSION here (and docs/findings/sbx-cli.md) "
+        "after verifying the new version's behavior, or investigate an "
+        "unexpected upstream sandbox image change."
+    )
 
 
 def test_execute_captures_stdout(runtime: SbxSandboxRuntime) -> None:
