@@ -24,15 +24,9 @@ from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecStatus
 from agentscope.runtime.sbx import SbxRuntimeConfig, SbxSandboxRuntime
 from agentscope.runtime.workspace import WorkspaceRoot
+from tests.external._sbx_baseline import EXPECTED_SANDBOX_PYTHON_VERSION
 
 pytestmark = [pytest.mark.external, pytest.mark.sbx]
-
-# The Python major.minor version AgentScope's sandbox image is expected to
-# run (design/DoD: "Python 3.14 remains the sandbox baseline"). This is the
-# single place to update when that requirement changes - e.g. bumping to
-# "3.15" - so the test below fails loudly on a mismatch instead of the
-# sandbox image silently drifting out from under an untested assumption.
-EXPECTED_SANDBOX_PYTHON_VERSION = "3.14"
 
 
 @pytest.fixture(scope="module")

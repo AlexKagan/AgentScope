@@ -245,6 +245,15 @@ def test_oversized_stderr_is_truncated_and_flagged(fake_workspace: object) -> No
     assert result.stdout == b""
 
 
+def test_output_limit_is_independent_per_stream(fake_workspace: object) -> None:
+    runner = _FixedOutputRunner(stdout=b"o" * 800, stderr=b"e" * 800)
+    runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
+    result = runtime.execute(ExecRequest(command=("emit",), max_output_bytes=1000))
+    assert result.stdout == b"o" * 800
+    assert result.stderr == b"e" * 800
+    assert result.truncated is False
+
+
 def test_output_within_limit_is_not_truncated(fake_workspace: object) -> None:
     runner = _FixedOutputRunner(stdout=b"small", stderr=b"also small")
     runtime = SbxSandboxRuntime(SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=runner))  # type: ignore[arg-type]
@@ -316,6 +325,8 @@ def test_close_failure_is_normalized_and_retryable(fake_workspace: object) -> No
     runtime = _runtime(fake_workspace, runner)
     with pytest.raises(SandboxCleanupError, match="remove failed"):
         runtime.close()
+    with pytest.raises(SandboxClosedError):
+        runtime.execute(ExecRequest(command=("echo", "must-not-resume")))
     runtime.close()
     assert len(runner.calls_for("rm")) == 2
 

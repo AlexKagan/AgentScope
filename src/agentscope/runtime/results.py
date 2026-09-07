@@ -24,7 +24,16 @@ class ExecStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class ExecResult:
-    """A boundary-safe execution result."""
+    """A boundary-safe execution result.
+
+    ``message`` is sanitized, human-readable diagnostic text. It may be
+    multiline and may change between backend versions; consumers must branch
+    on ``status`` rather than parse it as a machine-readable error code.
+
+    ``max_output_bytes`` is enforced independently for stdout and stderr by
+    runtimes, so a result may retain up to twice the request's per-stream
+    limit in total.
+    """
 
     status: ExecStatus
     exit_code: int | None = None

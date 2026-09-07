@@ -44,6 +44,9 @@ and remain retryable.
   run. Any caller issuing multiple commands through one `SbxSandboxRuntime`
   must be prepared for the runtime to become unusable mid-run after one
   timeout, and must construct a new runtime (a new sandbox) to continue.
+- Workspace writes are not transactional. Files produced before termination
+  remain available for diagnostics but may be partial or inconsistent; callers
+  decide whether to inspect, discard, or remount that workspace.
 - This is proven, not assumed: `tests/external/test_sbx_timeout.py` verifies
   against the real backend that a continuously-updated file inside the
   workspace genuinely stops changing once `execute()` reports `TIMED_OUT`.

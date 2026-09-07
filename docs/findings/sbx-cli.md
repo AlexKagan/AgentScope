@@ -125,12 +125,13 @@ sandbox baseline"), but was initially true only by chance — nothing checked
 it. Now enforced by
 `tests/external/test_sbx_execute.py::test_sandbox_python_version_matches_expected_baseline`,
 which compares the sandbox's reported `major.minor` against the
-`EXPECTED_SANDBOX_PYTHON_VERSION` constant at the top of that file (currently
-`"3.14"`) and fails loudly on any mismatch — confirmed by deliberately
+`EXPECTED_SANDBOX_PYTHON_VERSION` constant in
+`tests/external/_sbx_baseline.py` (currently `"3.14"`) and fails loudly on any
+mismatch — confirmed by deliberately
 setting it to `"3.13"` and observing a clear, actionable failure.
 
 **To change the required baseline** (e.g. to Python 3.15): update
-`EXPECTED_SANDBOX_PYTHON_VERSION` in `tests/external/test_sbx_execute.py`,
+`EXPECTED_SANDBOX_PYTHON_VERSION` in `tests/external/_sbx_baseline.py`,
 re-run `uv run pytest -m sbx`, and update this note once the new version's
 behavior has been re-verified — do not just bump the constant to make the
 test pass without checking whether anything else in this findings doc
@@ -142,6 +143,12 @@ Under the global `deny-all` policy, `curl https://example.com` from inside
 the sandbox returned **HTTP 403**, not a connection-refused/timeout error —
 egress appears to be proxied/intercepted rather than dropped at the network
 layer. Local command execution inside the sandbox was unaffected.
+
+Raw TCP connection establishment may also report success because the
+transparent policy proxy accepts the local side of `connect()`. This is not
+evidence that traffic reached the destination. The black-box suite therefore
+uses a controlled host listener and asserts that no sandbox connection or
+payload reaches it, rather than asserting that `connect()` itself fails.
 
 **Test-writing implication:** black-box network-isolation tests should assert
 "non-2xx / blocked response," not assume a raw connection error.

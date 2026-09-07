@@ -3,15 +3,41 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Iterator
+from functools import cache
 
 import pytest
+
+from tests.external._sbx_baseline import EXPECTED_SBX_VERSION
 
 # The literal fake secret values seeded into the environment by ``seeded_secret_env``.
 # Downstream tests assert these substrings never appear in dumps, reprs, logs, or traces.
 FAKE_OPENAI_KEY = "sk-FAKE-DEADBEEF-0000000000000000"
 FAKE_PHOENIX_KEY = "phx-FAKE-1111111111111111"
 FAKE_OTLP_HEADERS = "authorization=Bearer sk-FAKE-2222222222222222"
+
+
+@cache
+def _verify_sbx_version() -> None:
+    if os.environ.get("SBX_ALLOW_UNVERIFIED_VERSION") == "1":
+        return
+    completed = subprocess.run(
+        ["sbx", "version"], capture_output=True, text=True, timeout=15, check=True
+    )
+    actual = completed.stdout.split()[2]
+    if actual != EXPECTED_SBX_VERSION:
+        raise RuntimeError(
+            f"sbx version mismatch: expected {EXPECTED_SBX_VERSION}, got {actual}; "
+            "set SBX_ALLOW_UNVERIFIED_VERSION=1 only for exploratory local testing"
+        )
+
+
+@pytest.fixture(autouse=True)
+def enforce_sbx_test_baseline(request: pytest.FixtureRequest) -> None:
+    """Fail real-sandbox tests fast when local CLI assumptions have drifted."""
+    if request.node.get_closest_marker("sbx") is not None:
+        _verify_sbx_version()
 
 
 @pytest.fixture(autouse=True)

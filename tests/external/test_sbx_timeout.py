@@ -88,6 +88,36 @@ def test_timeout_finishes_within_bounded_wall_time(
     assert elapsed < 30.0
 
 
+def test_cpu_bound_process_is_stopped_within_bound(runtime: SbxSandboxRuntime) -> None:
+    started = time.monotonic()
+    result = runtime.execute(
+        ExecRequest(command=("python3", "-c", "exec('while True: pass')"), timeout_s=2.0)
+    )
+    assert result.status is ExecStatus.TIMED_OUT
+    assert time.monotonic() - started < 30.0
+
+
+def test_spawned_child_process_stops_modifying_workspace(
+    runtime: SbxSandboxRuntime, workspace: WorkspaceRoot
+) -> None:
+    heartbeat = workspace.path / "child-heartbeat.txt"
+    result = runtime.execute(
+        ExecRequest(
+            command=(
+                "sh",
+                "-c",
+                "(while true; do echo child >> child-heartbeat.txt; sleep 0.2; done) & wait",
+            ),
+            timeout_s=2.0,
+        )
+    )
+    assert result.status is ExecStatus.TIMED_OUT
+    assert heartbeat.exists()
+    size_at_timeout = heartbeat.stat().st_size
+    time.sleep(3)
+    assert heartbeat.stat().st_size == size_at_timeout
+
+
 def test_runtime_is_invalid_after_timeout_against_real_backend(
     runtime: SbxSandboxRuntime,
 ) -> None:

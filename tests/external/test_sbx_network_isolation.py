@@ -14,10 +14,14 @@ to block egress the same way the machine's own global deny-all policy does
 
 from __future__ import annotations
 
+import socket
+import threading
+
 import pytest
 
 from agentscope.runtime.errors import DisallowedEnvVarError
 from agentscope.runtime.requests import ExecRequest
+from agentscope.runtime.results import ExecStatus
 from agentscope.runtime.sbx import NetworkPolicy, SbxRuntimeConfig, SbxSandboxRuntime
 from agentscope.runtime.workspace import WorkspaceRoot
 
@@ -75,3 +79,45 @@ def test_network_policy_cannot_be_overridden_by_command_env(
                 env={"HTTP_PROXY": "", "NO_PROXY": "", "https_proxy": ""},
             )
         )
+
+
+def test_raw_tcp_bytes_do_not_reach_host_service(runtime: SbxSandboxRuntime) -> None:
+    listener = socket.socket()
+    listener.bind(("0.0.0.0", 0))  # noqa: S104 - deliberate host-reachability probe
+    listener.listen(1)
+    listener.settimeout(5)
+    port = listener.getsockname()[1]
+    accepted = threading.Event()
+
+    def accept_once() -> None:
+        try:
+            connection, _address = listener.accept()
+            connection.close()
+            accepted.set()
+        except TimeoutError:
+            pass
+
+    thread = threading.Thread(target=accept_once)
+    thread.start()
+    try:
+        result = runtime.execute(
+            ExecRequest(
+                command=(
+                    "python3",
+                    "-c",
+                    "import socket; "
+                    f"s=socket.create_connection(('host.docker.internal', {port}), timeout=3); "
+                    "s.sendall(b'agentscope-probe')",
+                ),
+                timeout_s=10,
+            )
+        )
+    finally:
+        thread.join(timeout=6)
+        listener.close()
+
+    # sbx's transparent deny proxy may accept connect() locally, so the
+    # command's exit code is not the security boundary. The controlled host
+    # listener must never observe the attempted raw TCP connection.
+    assert result.status is ExecStatus.COMPLETED
+    assert not accepted.is_set(), "sandbox connected to a service on the host"

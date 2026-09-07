@@ -163,6 +163,9 @@ class SbxSandboxRuntime:
     reporting ``TIMED_OUT``. If stop fails it forces removal; if neither can
     confirm termination, it reports ``INFRA_FAILURE``. Cleanup failures remain
     retryable through ``close()``.
+
+    Instances are single-owner and not concurrency-safe. Callers must
+    serialize ``execute()`` and ``close()`` operations for a workspace.
     """
 
     def __init__(
@@ -283,6 +286,9 @@ class SbxSandboxRuntime:
     def close(self) -> None:
         if self._state is _State.CLOSED:
             return
+        # Once closure starts, execution must never resume even if removal
+        # fails. INVALID keeps cleanup retryable while rejecting execute().
+        self._state = _State.INVALID
         failure = self._remove_failure()
         if failure is not None:
             raise SandboxCleanupError(f"failed to remove sandbox {self._name!r}: {failure}")

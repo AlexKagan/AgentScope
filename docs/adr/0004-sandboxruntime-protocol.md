@@ -16,7 +16,7 @@ fakes. Docker Sandboxes implement the protocol in Phase 1A.
 
 ## Consequences
 - The contract is written so later security requirements are representable
-  (explicit workspace root, pre-filtered env, workspace-relative cwd, explicit
+  (explicit workspace root, runtime-validated env, workspace-relative cwd, explicit
   timeouts/limits, typed outcome categories).
 - Phase 0 makes no claim that real process termination, isolation, or mount
   behavior is verified — that is a Phase 1A/2 acceptance concern.
@@ -34,3 +34,8 @@ implement it; the shared contract suite (`tests/contract/`) exercises
 idempotency on the fake, and `SbxSandboxRuntime`'s own unit tests
 (`tests/unit/test_sbx_sandbox_runtime.py`) exercise it against a scripted
 `sbx` CLI double.
+
+The repository represents the current amended protocol, not a runnable
+historical snapshot of Phase 0. The shared contract suite therefore applies
+`close()` to fake and real implementations; historical behavior remains
+recorded by this ADR rather than parallel protocol versions.

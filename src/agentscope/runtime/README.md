@@ -14,12 +14,12 @@ boundary that invokes the local `sbx` binary.
 |---|---|
 | `SandboxRuntime` (Protocol) | `workspace: WorkspaceRoot`; `execute(ExecRequest) -> ExecResult`; `close() -> None` (idempotent — added Phase 1A.1, ADR 0004 amendment). No implicit host env, no unrestricted host path. |
 | `ExecRequest` | Frozen. Non-empty `command`; workspace-relative `cwd` (no `..`, not absolute); requested `env` coerced to `str`→`str` and validated by the runtime; `timeout_s` is `float \| None` (`None` = the backend default); positive `max_output_bytes`. |
-| `ExecResult` / `ExecStatus` | Frozen. `COMPLETED` carries `exit_code`; `TIMED_OUT` / `INFRA_FAILURE` must not. `truncated` flags output-limit hits. |
+| `ExecResult` / `ExecStatus` | Frozen. `COMPLETED` carries `exit_code`; `TIMED_OUT` / `INFRA_FAILURE` must not. `max_output_bytes` applies independently to stdout and stderr, so retained output may total twice that value. `message` is human-readable, potentially multiline, and never machine-parseable; consumers branch on `status`. |
 | `build_sandbox_environment` | Empty baseline (`SANDBOX_BASE_ENV` literals) + allowlisted requests only. Values literal, never interpolated. Never reads `os.environ`. |
 | `reject_host_env_lookup` | Always raises — there is no model-facing "read host env var" capability. |
 | `WorkspaceRoot` / `resolve_within` / `WorkspaceRelativePath` | Canonical workspace root; one validator that rejects absolute paths, `..`, and symlink escapes. |
 | `SbxRuntimeConfig` / `NetworkPolicy` | Frozen. Validates resources, names, timeouts, and the environment allowlist. The serialized string `"disabled"` is normalized; every other network policy is rejected, so every constructible Phase 1A.1 configuration denies egress. Carries no secret material. |
-| `SbxSandboxRuntime` | One persistent sandbox per instance. It validates requested environment variables itself and compensates failed creation with forced removal. A timeout returns `TIMED_OUT` only after stop or removal confirms termination; otherwise it returns `INFRA_FAILURE`. `close()` raises `SandboxCleanupError` on failure and remains retryable, transitioning to `CLOSED` only after confirmed removal. |
+| `SbxSandboxRuntime` | One persistent sandbox per instance. Single-owner and not concurrency-safe: callers serialize `execute()` and `close()`. It validates requested environment variables itself and compensates failed creation with forced removal. A timeout returns `TIMED_OUT` only after stop or removal confirms termination; otherwise it returns `INFRA_FAILURE`. Closure immediately makes the runtime non-executable; cleanup failures remain retryable. |
 | `_sbx_cli.SbxCli` (private) | Argv-only boundary to the local `sbx` binary; never `shell=True`. `build_exec_argv` always emits `-e NAME=value` (never a bare `-e NAME`, which copies from the *local* process env - see findings). `build_create_argv` adds a sandbox-scoped `--deny-network "**"` whenever `deny_network=True` (the default) - confirmed to block all egress the same way as a global deny-all policy, but without depending on it. `build_stop_argv` / `build_rm_argv` build the rest of the lifecycle. Subprocess-level failures (missing binary, local timeout) are reported via `SbxCliResult` fields, never raised. |
 
 ## Dependencies
@@ -125,6 +125,21 @@ Full black-box security tests (path-attack argv forms) are Step 15.
 ## Telemetry
 None emitted in Phase 0.
 
+## Concurrency, file APIs, and workspace recovery
+
+`SbxSandboxRuntime` does not support concurrent calls. A runtime has one owner,
+and that owner must serialize command execution and closure. Concurrency and
+multi-sandbox orchestration remain deferred beyond Phase 1A.1.
+
+The mounted workspace persists across commands. When a command times out,
+files already written remain present and may be partial or internally
+inconsistent; stopping the sandbox is not a transaction rollback. Callers must
+inspect, discard, or replace the workspace before continuing in a new runtime.
+
+The current protocol has no `read_file`, `write_file`, `apply_patch`, or
+`collect_artifacts` operations. Phase 1A.1 preserves this surface; introducing
+file APIs and their artifact semantics is deferred.
+
 ## Security implications
 Upholds two invariants (design §8.5–8.6): the sandbox environment is built by
 positive allowlisting from an empty baseline, and every model-facing path is
@@ -148,129 +163,22 @@ unverified behavior. Cleans up (`sbx rm --all -f`, `sbx logout`) in an
 `if: always()` step regardless of outcome. The default `ci.yml` remains
 entirely `sbx`-free (`pytest`'s default `-m 'not external'`).
 
+The external pytest suite independently gates local runs against the baselines
+in `tests/external/_sbx_baseline.py`. Exploratory testing with another CLI
+version requires `SBX_ALLOW_UNVERIFIED_VERSION=1`; CI never uses this override.
+
 ## Deferred work
 Dynamic network allowlists and package-registry access remain out of scope
 for Phase 1A.1 entirely (see the implementation plan).
 
-## Open issues & verification gaps (Phase 1A.1 post-implementation audit)
+## Resolved Phase 1A.1 audit clarifications
 
-### Protocol & scope clarifications
-
-**File operations** — Step 12 of the implementation plan mentions `read_file`,
-`write_file`, `apply_patch`, `collect_artifacts` as potentially inherited from
-Phase 0. These are **not currently defined** in the `SandboxRuntime` protocol
-and are **not implemented in `SbxSandboxRuntime`**. File operations are
-intentionally deferred to Phase 1A/2 and will be defined in a separate protocol
-extension when needed. The mounted workspace is already accessible to callers
-via host-side file I/O; `sbx cp` is deliberately avoided (plan Step 12).
-
-**Concurrency semantics** — `SbxSandboxRuntime.execute()` is **not documented
-as thread-safe or async-safe**. Current implementation is single-threaded
-only: concurrent calls are not prevented at the type level, and behavior under
-concurrent access is undefined. **Documented as open issue**: callers must
-serialize all `execute()` calls to a single runtime instance. Parallel
-command execution requires constructing separate runtime instances (separate
-sandboxes). See `sbx.py` line 203–204.
-
-**Protocol version marking** — Phase 1A.1 amended `SandboxRuntime` by adding
-`close() -> None` (ADR 0004 amendment), retroactively changing Phase 0's
-contract. The protocol itself in `sandbox.py` does not mark this amendment
-explicitly. **Future**: add a protocol version constant or docstring noting
-the Phase 1A.1 amendment so future implementers don't miss the requirement.
-
-### Testing gaps
-
-**Resource limit override prevention** — `test_sbx_resource_limits.py` verifies
-limits are *observed* as applied inside the sandbox (via `nproc`, `/proc/meminfo`),
-but does not test whether application-level environment manipulation can
-circumvent them. For example, can a process set `GOMAXPROCS`, `JAVA_OPTS`, or
-other application-level resource hints to exceed the kernel limits? **Action:**
-add tests to `test_sbx_resource_limits.py` attempting `GOMAXPROCS` override,
-subprocess spawning beyond CPU limit, memory allocation patterns, and verify
-they remain bounded. This is a follow-up refinement; current tests prove limits
-are enforced at the sandbox layer.
-
-**Output truncation with both streams large** — `max_output_bytes` is applied
-independently to each stream, but there is no explicit test for the case where
-both stdout and stderr together exceed the limit. Unit tests at lines 226–245
-in `test_sbx_sandbox_runtime.py` cover independent truncation, but not the
-combined scenario. Current behavior: truncate stdout to `max_output_bytes`,
-*then* truncate stderr to `max_output_bytes` independently — the combined
-size may be `2 * max_output_bytes`. This is correct and documented in the code,
-but a test matching the combined case would improve clarity.
-
-**Timeout under real load** — Timeout tests use `sleep` (idle) or heartbeat
-(low I/O). Untested under stress:
-  - Heavy I/O (many writes)
-  - CPU-saturated work
-  - Memory pressure approaching limits
-  - Subprocess spawning
-  - DNS/network-attempt (even though egress is blocked)
-
-Current tests prove timeout *works*, but edge-case latency and prompt
-termination under load are unverified. Not a blocker; acceptable for Phase
-1A.1.
-
-**Network isolation extended cases** — `test_sbx_network_isolation.py` tests
-`curl` to external HTTPS. Untested:
-  - DNS resolution behavior (blocked, cached locally, or fails?)
-  - Non-standard outbound ports (only HTTP/HTTPS confirmed)
-  - Localhost/127.0.0.1 escape (can a command connect to host services?)
-
-Current test proves egress is blocked; extended cases remain Phase 1A/2
-hardening.
-
-**Python version baseline regression** — `EXPECTED_SANDBOX_PYTHON_VERSION =
-"3.14"` is hardcoded in `tests/external/test_sbx_execute.py` and documented
-in `docs/findings/sbx-cli.md`. The constant is only checked in the `@pytest.mark.sbx`
-suite, so default CI doesn't validate it. If the sandbox image is updated,
-the test fails clearly, but there's no automated sync between the constant
-and the findings doc. **Future**: consider centralizing the baseline version
-in `pyproject.toml` or `.python-version`-style config, with both tests and
-docs referencing it.
-
-### Workspace & diagnostics
-
-**Post-timeout workspace state** — When `execute()` returns `TIMED_OUT`, the
-sandbox is stopped (INVALID state). The workspace is preserved. Callers **should
-preserve the workspace for diagnostics** (partial results, logs, state from the
-interrupted command). If a new runtime is created, it can mount the same
-workspace, or callers can inspect files before cleanup. This is caller-owned;
-the runtime does not auto-cleanup.
-
-**Symlink-argument escape not validated by AgentScope** — `resolve_within()`
-rejects symlink escapes in `cwd`, but a symlink *named as a command argument*
-(e.g., `("cat", "/task/link-to-outside")`) is forwarded unexamined. Safety
-relies on `sbx`'s mount isolation: the symlink's target doesn't exist inside
-the sandbox. This is a dependency on external `sbx` behavior, not AgentScope's
-own validation (documented in `THREAT_MODEL.md` line 79). Acceptable for Phase
-1A.1; future sandboxes must maintain this isolation property.
-
-### Version pinning & reproducibility
-
-**Sandbox image and `sbx` CLI version** — `sbx-smoke.yml` pins `EXPECTED_SBX_VERSION:
-"v0.39.0"`. The implementation does not check the actual `sbx` version before
-creating a sandbox; developers running `uv run pytest -m sbx` with a different
-version locally will silently test against unverified behavior. **Best practice:**
-before running real-backend tests locally, verify `sbx version` matches `sbx-smoke.yml`.
-Future: `SbxSandboxRuntime` could emit a warning if the installed version doesn't
-match the verified baseline, but parsing `sbx version` output is fragile
-(undocumented format).
-
-### Close() retryability after partial failure
-
-**State transition unclear when removal fails** — `close()` raises `SandboxCleanupError`
-on failure and remains retryable (code line 282–283 in `sbx.py`). Internally,
-`_remove_failure()` checks `sbx ls --json` to confirm absence; if the sandbox
-persists or the list command fails, the failure is reported. The runtime does
-*not* transition to CLOSED until removal succeeds. This is correct — it remains
-retryable — but underdocumented. Callers should treat `SandboxCleanupError`
-as "try `close()` again; the runtime is still holding the sandbox." Document
-this in consumer code.
-
----
-
-**Audit date**: Phase 1A.1 post-completion review. See git log for the commit
-completing Phase 1A.1 (e.g., "Complete Phase 1A.1: contract parity, CI, and docs").
-All items above are acceptable for Phase 1A.1; they represent follow-up
-refinements and extended test coverage for Phase 1A/2.
+- File-operation methods are not part of the current protocol and remain deferred.
+- Runtime instances are single-owner; callers serialize execution and closure.
+- Native CPU and memory controls are microVM boundaries, not application hints.
+- Output limits apply independently to stdout and stderr.
+- Failed closure makes the runtime non-executable while preserving cleanup retryability.
+- CPU-bound and subprocess-tree timeout behavior has real-backend coverage.
+- HTTP, raw TCP, and host-loopback isolation have real-backend coverage.
+- The external suite enforces centralized Python and sbx version baselines.
+- A timed-out workspace is preserved for diagnostics but may contain partial state.
