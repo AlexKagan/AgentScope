@@ -30,6 +30,8 @@ class _TimeoutOnExecRunner:
         self.calls: list[list[str]] = []
         self._stop_returncode = stop_returncode
         self._rm_returncode = rm_returncode
+        self._sandbox_name = ""
+        self._exists = False
 
     def __call__(
         self, argv: Sequence[str], *, timeout: float | None
@@ -37,6 +39,9 @@ class _TimeoutOnExecRunner:
         argv = list(argv)
         self.calls.append(argv)
         subcommand = argv[1]
+        if subcommand == "create":
+            self._sandbox_name = argv[argv.index("--name") + 1]
+            self._exists = True
         if subcommand == "exec":
             raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout or 0)
         if subcommand == "stop":
@@ -44,9 +49,18 @@ class _TimeoutOnExecRunner:
                 args=(), returncode=self._stop_returncode, stdout=b"", stderr=b"stop failed"
             )
         if subcommand == "rm":
+            if self._rm_returncode == 0:
+                self._exists = False
             return subprocess.CompletedProcess(
                 args=(), returncode=self._rm_returncode, stdout=b"", stderr=b"remove failed"
             )
+        if subcommand == "ls":
+            stdout = (
+                f'{{"sandboxes":[{{"name":"{self._sandbox_name}"}}]}}'.encode()
+                if self._exists
+                else b'{"sandboxes":[]}'
+            )
+            return subprocess.CompletedProcess(args=(), returncode=0, stdout=stdout, stderr=b"")
         return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
 
     def calls_for(self, subcommand: str) -> list[list[str]]:

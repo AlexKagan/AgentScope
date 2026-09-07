@@ -161,3 +161,8 @@ class SbxCli:
     def build_rm_argv(name: str) -> list[str]:
         """Build the argv for ``sbx rm -f`` - final, forced teardown."""
         return ["rm", "-f", name]
+
+    @staticmethod
+    def build_list_argv() -> list[str]:
+        """Build the machine-readable sandbox inventory command."""
+        return ["ls", "--json"]

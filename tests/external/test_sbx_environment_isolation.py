@@ -10,18 +10,9 @@ raw CLI, and not just the in-process ``build_sandbox_environment`` unit
 tests), that: the sandbox never inherits the AgentScope host process's
 environment, and an explicitly allowlisted variable does reach the sandbox.
 
-Deliberately does *not* exercise ``SANDBOX_BASE_ENV`` defaults (e.g. `HOME`):
-see the "Known gap" note in ``docs/findings/sbx-cli.md`` and
-``runtime/README.md`` - those literals assume a `/workspace` mount point that
-does not exist in the real backend, and are not yet wired into
-`SbxSandboxRuntime` by any caller.
-
-``test_secret_named_variable_rejected`` and ``test_sbx_invocation_never_uses_
-bare_env_name`` from the Phase 1A.1 plan's Step 6 list are pure in-process
-policy checks already covered by ``tests/unit/test_environment_policy.py``
-(`test_non_allowlisted_var_is_rejected_in_strict_mode`) and
-``tests/unit/test_sbx_cli.py`` (`test_sbx_cli_never_emits_bare_env_name`) -
-not duplicated here since they need no real sandbox.
+The runtime itself owns strict allowlist enforcement. Its explicit base
+environment intentionally leaves ``HOME`` to the shell image's valid native
+default because the real backend has no fixed ``/workspace`` mount point.
 """
 
 from __future__ import annotations

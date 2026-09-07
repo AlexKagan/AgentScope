@@ -136,6 +136,10 @@ def test_sbx_cli_build_rm_argv_forces_removal() -> None:
     assert SbxCli.build_rm_argv("my-sandbox") == ["rm", "-f", "my-sandbox"]
 
 
+def test_sbx_cli_build_list_argv_is_machine_readable() -> None:
+    assert SbxCli.build_list_argv() == ["ls", "--json"]
+
+
 def test_sbx_cli_run_returns_captured_output() -> None:
     completed = subprocess.CompletedProcess(args=(), returncode=7, stdout=b"out", stderr=b"err")
     cli = SbxCli(runner=_RecordingRunner(completed))

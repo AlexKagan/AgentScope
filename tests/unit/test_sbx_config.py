@@ -38,7 +38,10 @@ def test_sbx_config_rejects_unsupported_network_policy(network_policy: object) -
         SbxRuntimeConfig(network_policy=network_policy)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("env_allowlist", [set(), frozenset({""}), frozenset({1})])
+@pytest.mark.parametrize(
+    "env_allowlist",
+    [set(), frozenset({""}), frozenset({1}), frozenset({"A=B"}), frozenset({"1BAD"})],
+)
 def test_sbx_config_rejects_invalid_environment_allowlist(env_allowlist: object) -> None:
     with pytest.raises(RuntimeContractError):
         SbxRuntimeConfig(env_allowlist=env_allowlist)  # type: ignore[arg-type]

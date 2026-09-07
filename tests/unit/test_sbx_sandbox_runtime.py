@@ -44,6 +44,8 @@ class _ScriptedSbxRunner:
         self._create_returncode = create_returncode
         self._exec_delay_s = exec_delay_s
         self._rm_returncodes = list(rm_returncodes or [0])
+        self._sandbox_name = ""
+        self._exists = False
 
     def __call__(
         self, argv: Sequence[str], *, timeout: float | None
@@ -53,6 +55,8 @@ class _ScriptedSbxRunner:
         self.timeouts.append(timeout)
         subcommand = argv[1]  # argv[0] is always the "sbx" binary name
         if subcommand == "create":
+            self._sandbox_name = argv[argv.index("--name") + 1]
+            self._exists = True  # also models a partial allocation on failure
             stderr = b"" if self._create_returncode == 0 else b"boom: creation failed"
             return subprocess.CompletedProcess(
                 args=(), returncode=self._create_returncode, stdout=b"", stderr=stderr
@@ -63,12 +67,21 @@ class _ScriptedSbxRunner:
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"ok\n", stderr=b"")
         if subcommand == "rm":
             returncode = self._rm_returncodes.pop(0) if self._rm_returncodes else 0
+            if returncode == 0:
+                self._exists = False
             stderr = b"remove failed" if returncode else b""
             return subprocess.CompletedProcess(
                 args=(), returncode=returncode, stdout=b"", stderr=stderr
             )
         if subcommand == "stop":
             return subprocess.CompletedProcess(args=(), returncode=0, stdout=b"", stderr=b"")
+        if subcommand == "ls":
+            stdout = (
+                f'{{"sandboxes":[{{"name":"{self._sandbox_name}"}}]}}'.encode()
+                if self._exists
+                else b'{"sandboxes":[]}'
+            )
+            return subprocess.CompletedProcess(args=(), returncode=0, stdout=stdout, stderr=b"")
         raise AssertionError(f"unexpected sbx subcommand: {subcommand!r}")
 
     def calls_for(self, subcommand: str) -> list[list[str]]:
@@ -305,6 +318,15 @@ def test_close_failure_is_normalized_and_retryable(fake_workspace: object) -> No
         runtime.close()
     runtime.close()
     assert len(runner.calls_for("rm")) == 2
+
+
+def test_close_accepts_independently_confirmed_absence(fake_workspace: object) -> None:
+    runner = _ScriptedSbxRunner(rm_returncodes=[1])
+    runtime = _runtime(fake_workspace, runner)
+    runner._exists = False
+    runtime.close()
+    runtime.close()
+    assert len(runner.calls_for("rm")) == 1
 
 
 def test_execute_after_close_fails_deterministically(fake_workspace: object) -> None:

@@ -14,6 +14,7 @@ in a usable state - there is no separate "half-initialized" state to leak.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import uuid
@@ -43,6 +44,7 @@ _MEMORY_UNIT_MULTIPLIER = {"m": 1024**2, "g": 1024**3}
 # with a letter or number, containing only letters, numbers, hyphens, and
 # periods; "default" is reserved by sbx.
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]+$")
+_ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_NAMES = frozenset({"default"})
 
 
@@ -96,9 +98,12 @@ class SbxRuntimeConfig:
         object.__setattr__(self, "network_policy", policy)
 
         if not isinstance(self.env_allowlist, frozenset) or not all(
-            isinstance(name, str) and name for name in self.env_allowlist
+            isinstance(name, str) and _ENV_NAME_PATTERN.fullmatch(name)
+            for name in self.env_allowlist
         ):
-            raise RuntimeContractError("env_allowlist must be a frozenset of non-empty strings")
+            raise RuntimeContractError(
+                "env_allowlist must be a frozenset of valid environment variable names"
+            )
 
         if self.cpu_limit <= 0:
             raise RuntimeContractError(f"cpu_limit must be > 0, got {self.cpu_limit!r}")
@@ -188,11 +193,8 @@ class SbxSandboxRuntime:
         result = self._cli.run(argv, timeout_s=self._config.create_timeout_s)
         if result.error is not None or result.timed_out or result.returncode != 0:
             detail = result.error or result.stderr.decode("utf-8", errors="replace").strip()
-            cleanup = self._cli.run(
-                SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
-            )
+            cleanup_detail = self._remove_failure()
             self._state = _State.CLOSED
-            cleanup_detail = _cli_failure_detail(cleanup)
             message = f"failed to create sandbox {self._name!r}: {detail or 'unknown error'}"
             if cleanup_detail is not None:
                 message += f"; compensating removal was not confirmed: {cleanup_detail}"
@@ -227,10 +229,7 @@ class SbxSandboxRuntime:
             )
             self._state = _State.INVALID
             if _cli_failure_detail(stop_result) is not None:
-                remove_result = self._cli.run(
-                    SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
-                )
-                remove_failure = _cli_failure_detail(remove_result)
+                remove_failure = self._remove_failure()
                 duration_s = time.monotonic() - started_at
                 if remove_failure is None:
                     self._state = _State.CLOSED
@@ -278,13 +277,31 @@ class SbxSandboxRuntime:
     def close(self) -> None:
         if self._state is _State.CLOSED:
             return
+        failure = self._remove_failure()
+        if failure is not None:
+            raise SandboxCleanupError(f"failed to remove sandbox {self._name!r}: {failure}")
+        self._state = _State.CLOSED
+
+    def _remove_failure(self) -> str | None:
+        """Remove the owned sandbox, accepting independently confirmed absence."""
         result = self._cli.run(
             SbxCli.build_rm_argv(self._name), timeout_s=self._config.cleanup_timeout_s
         )
         failure = _cli_failure_detail(result)
-        if failure is not None:
-            raise SandboxCleanupError(f"failed to remove sandbox {self._name!r}: {failure}")
-        self._state = _State.CLOSED
+        if failure is None:
+            return None
+
+        inventory = self._cli.run(
+            SbxCli.build_list_argv(), timeout_s=self._config.cleanup_timeout_s
+        )
+        if _cli_failure_detail(inventory) is not None:
+            return failure
+        try:
+            data = json.loads(inventory.stdout)
+            names = {item["name"] for item in data["sandboxes"]}
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return failure
+        return None if self._name not in names else failure
 
 
 def _truncate(data: bytes, max_bytes: int) -> tuple[bytes, bool]:
