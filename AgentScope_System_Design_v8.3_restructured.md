@@ -400,7 +400,24 @@ The first adapter implements an OpenAI-compatible chat-completions interface and
 
 ### 10.1 Registry
 
-`ModelRegistry` resolves a model key to a configured adapter. Cache identity includes model configuration/version, reasoning options, provider-specific request options, and tool-schema version. Credentials are injected by the trusted composition root and never enter serializable state.
+Public configuration defines two purpose-based model slots: `regular` for
+normal agent work and `fast` for latency/cost-sensitive work. These names do not
+identify providers. The user may assign any supported provider and model to
+either slot, or use the same model in both slots with different reasoning,
+verbosity, token, or timeout settings. `ModelRegistry` resolves the fixed slot
+to a configured adapter.
+
+Portable inference options live in a typed `parameters` block. Additional
+provider fields may use an allowlisted, JSON-compatible `provider_options`
+escape hatch. TOML omission means “use the provider/model default”; empty
+assignments and native `null` are not supported by TOML. Reasoning therefore
+distinguishes `provider_default`, `disabled`, and `enabled` explicitly, and the
+adapter translates that intent to provider-specific wire semantics.
+
+Cache identity includes the slot's complete safe model configuration/version,
+parameter presence, reasoning mode/options, provider-specific request options,
+and tool-schema version. Credentials are injected by the trusted composition
+root and never enter serializable state.
 
 ### 10.2 Usage normalization
 

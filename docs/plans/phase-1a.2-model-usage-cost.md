@@ -14,7 +14,7 @@ This increment delivers:
 
 - an async AgentScope model protocol;
 - one LangChain-based OpenAI-compatible Chat Completions adapter;
-- a registry of stable model configuration keys;
+- typed `regular` and `fast` model slots with internal registry resolution;
 - native structured-tool-call request and response normalization;
 - normalized token usage;
 - deterministic cost calculation with explicit provenance;
@@ -27,7 +27,7 @@ This increment delivers:
 
 ### UC-1: Invoke a configured model
 
-An architecture selects a stable model configuration key. Runtime context resolves it to a live adapter and invokes it with messages and optional tool schemas. The result contains normalized assistant content, structured tool calls, finish information, usage, and cost.
+An architecture selects the `regular` or `fast` purpose-based slot. Runtime context resolves it to a live adapter and invokes it with messages and optional tool schemas. The result contains normalized assistant content, structured tool calls, finish information, usage, and cost.
 
 ### UC-2: Compare model configurations reproducibly
 
@@ -97,7 +97,7 @@ A dedicated OpenRouter connector is postponed. It is introduced only if a record
 
 These are distinct:
 
-- **configuration key:** stable user-facing selection, for example `primary-reasoner`;
+- **purpose slot:** fixed user-facing selection, `regular` or `fast`;
 - **provider/service:** `openrouter` or `meta`;
 - **protocol:** `openai-chat-completions`;
 - **model name:** provider model identifier;
@@ -143,10 +143,24 @@ Use `Decimal` internally for prices and arithmetic. Convert provider numeric val
 
 Capabilities used by Phase 1A.2 are declared in the model definition and verified by contract/smoke tests. Startup must not spend tokens, add latency, or fail because a provider is temporarily unavailable.
 
+### D9. Expose two purpose-based model slots
+
+The public configuration exposes exactly two model slots: `regular` and `fast`.
+They describe how AgentScope intends to use a model, not which provider serves it:
+
+- `regular` is the default model for normal agent work;
+- `fast` is the latency/cost-optimized model for lightweight work;
+- either slot may use any supported provider, and both may use the same provider
+  or even the same model with different inference parameters.
+
+Provider names do not belong in slot names. A user who chooses Meta for the fast
+slot configures `[models.fast]`; they do not create a `meta-fast` alias or a
+separate role-to-catalog mapping.
+
 ## 5. Target architecture
 
 ```text
-PublicConfig ── selected model configuration key
+PublicConfig ── regular/fast model slot
      │
      ▼
 trusted composition root ── SecretConfig
@@ -174,7 +188,7 @@ adapter normalization
      └── normalized ModelError
 ```
 
-Only the configuration key and safe configuration identity may enter durable state. The registry, adapter, authenticated LangChain client, and credential remain runtime dependencies.
+Only the purpose slot and safe configuration identity may enter durable state. The registry, adapter, authenticated LangChain client, and credential remain runtime dependencies.
 
 ## 6. Proposed package structure
 
@@ -190,7 +204,7 @@ src/agentscope/models/
 ├── cost.py                 # PriceCard, LLMCost, precedence/calculation
 ├── identity.py             # safe model identity and fingerprint
 ├── configuration.py        # model definitions and declared capabilities
-├── registry.py             # stable-key registration/resolution
+├── registry.py             # regular/fast slot registration/resolution
 ├── errors.py               # normalized model error taxonomy
 └── openai_compatible.py    # LangChain implementation and response mapping
 ```
@@ -204,7 +218,7 @@ Also modify:
 - `.env.example` for secret variable names only; public model and smoke configuration lives in typed configuration files;
 - `pyproject.toml` and `uv.lock` to activate the required LangChain provider package;
 - `src/agentscope/models/README.md` to document the package boundary;
-- test markers and provider smoke workflows.
+- test markers and local provider smoke commands.
 
 Do not put provider implementations in `architectures/`. Architectures consume the model protocol and cannot access credentials or provider payloads.
 
@@ -214,48 +228,108 @@ The exact Python spelling is implementation work; the required semantics are bel
 
 ### 7.1 Model definition
 
-A validated, frozen, safely serializable definition contains:
+A validated, frozen, safely serializable definition for each `regular` or `fast`
+slot contains:
 
-- stable configuration key;
 - provider/service key;
 - protocol key;
 - model name;
-- optional HTTPS base URL;
+- optional HTTPS endpoint;
 - credential reference by symbolic field name, never its value;
 - request timeout;
 - declared capabilities required now: text and structured tool calling;
-- reasoning options;
-- allowlisted provider request options;
+- normalized model parameters, including temperature, output-token limit, and
+  verbosity when specified;
+- explicit reasoning configuration;
+- allowlisted provider-specific options as an escape hatch;
 - optional versioned pricing identity and prices;
 - adapter implementation version.
 
 Recommended operator-facing shape:
 
-```yaml
-primary_model_key: primary-reasoner
-models:
-  primary-reasoner:
-    provider: meta
-    protocol: openai-chat-completions
-    base_url: https://api.meta.ai/v1
-    model_name: muse-spark-1.3
-    credential_ref: meta_model_api_key
-    timeout_s: 60
-    capabilities: [text, tool_calling]
+```toml
+architecture_key = "simple-tool-agent"
+
+[models.regular]
+provider = "openrouter"
+protocol = "openai_chat_completions"
+model_name = "anthropic/claude-sonnet-4.6"
+endpoint = "https://openrouter.ai/api/v1"
+credential_ref = "openrouter_api_key"
+timeout_s = 120
+capabilities = ["text", "tool_calling", "reasoning"]
+
+[models.regular.parameters]
+temperature = 0.0
+max_output_tokens = 12000
+verbosity = "high"
+
+[models.regular.reasoning]
+mode = "enabled"
+effort = "high"
+exclude = false
+
+[models.fast]
+provider = "meta"
+protocol = "openai_chat_completions"
+model_name = "muse-spark-1.3"
+endpoint = "https://api.meta.ai/v1"
+credential_ref = "meta_model_api_key"
+timeout_s = 60
+capabilities = ["text", "tool_calling"]
+
+[models.fast.parameters]
+temperature = 0.0
+max_output_tokens = 4000
+
+[models.fast.reasoning]
+mode = "disabled"
 ```
 
 The fields have intentionally different meanings:
 
 - `provider` identifies the commercial/service boundary (`meta`, `openrouter`, `openai`); it is not a URL;
 - `protocol` selects request/response semantics and the adapter mode;
-- `base_url` identifies the endpoint and must be validated separately;
+- `endpoint` identifies the base URL and must be validated separately;
 - `model_name` is the provider's model identifier;
 - `credential_ref` names a permitted `SecretConfig` field; it never contains the secret;
-- `primary_model_key` decouples architecture/run configuration from provider details.
+- `regular` and `fast` identify runtime purpose independently of provider and model identity.
 
-The user's original three inputs—model name, provider endpoint, and credential—remain the essential deployment inputs. The additional provider/protocol/key fields prevent endpoint strings from becoming overloaded identifiers and make run records reproducible. For a small local configuration the registry can be built directly from this mapping; no separate database or provider catalog is needed.
+The user decides what qualifies as fast. It may be a smaller model, the regular
+model with reasoning disabled, or the same model with lower reasoning effort,
+verbosity, token limit, or timeout. AgentScope does not infer this role from the
+provider or model name.
 
-Arbitrary provider kwargs are not accepted blindly. Maintain an explicit allowlist per profile so credentials, callbacks, unsafe endpoints, and behavior-affecting options cannot bypass validation or reproducibility identity.
+#### Parameter presence and defaults
+
+TOML has neither an unassigned value nor a native `null`. Consequently,
+`verbosity =` is invalid TOML and an empty string is a real value, not a default
+marker. Configuration uses these semantics consistently:
+
+- omitted parameter or omitted `[models.<slot>.parameters]` table: do not send an
+  override; use the provider/model default;
+- present parameter: validate and send the supplied override;
+- omitted `[models.<slot>.reasoning]` table, or `mode = "provider_default"`: do
+  not send a reasoning override;
+- `mode = "disabled"`: explicitly disable reasoning using the provider-specific
+  wire representation;
+- `mode = "enabled"`: require a supported `effort` or reasoning-token budget,
+  according to the selected provider profile.
+
+Provider default, explicitly disabled, and explicitly enabled reasoning are
+three different configurations and must produce different fingerprints.
+Adapters translate the canonical intent; users need not know whether a provider
+represents disabled reasoning as `null`, `"none"`, `enabled = false`, or another
+protocol-specific value.
+
+`parameters` contains portable AgentScope-defined options. `provider_options`
+may contain additional JSON-compatible request fields supported by a particular
+model/provider, but remains explicitly allowlisted and fingerprinted. It must
+not accept credentials, callbacks, endpoints, client construction settings, or
+identity overrides. Common cross-provider fields such as `verbosity` should be
+promoted into `parameters` rather than duplicated in `provider_options`.
+
+The user's original three inputs—model name, provider endpoint, and credential—remain the essential deployment inputs. The additional provider and protocol fields prevent endpoint strings from becoming overloaded identifiers and make run records reproducible. No separate database, provider catalog, or role-to-model alias layer is needed for these two slots.
 
 ### 7.2 Model request
 
@@ -364,15 +438,20 @@ Error messages and safe metadata must not contain credentials, authorization hea
 
 ## 8. Configuration and lifecycle migration
 
-### 8.1 Stable keys
+### 8.1 Purpose-based slots
 
-The current `primary_model="provider:name"` parser conflates selection with provider/model identity. Phase 1A.2 should migrate to:
+The current `primary_model_key` plus arbitrary model catalog is replaced by two
+typed purpose-based slots:
 
-- `primary_model_key`: a stable key such as `primary-reasoner`;
-- a validated model-definition catalog supplied to composition;
-- `ModelRegistry.resolve(primary_model_key)` returning the canonical definition and live adapter.
+- `models.regular` for default agent work;
+- `models.fast` for latency/cost-sensitive work;
+- typed resolution by slot, without provider-derived aliases.
 
-Because the project is pre-release, prefer a clear breaking migration over maintaining two ambiguous formats. If compatibility is temporarily required, parse the legacy value only at the configuration edge, emit a deprecation warning, and immediately convert it to a generated definition. Do not support both representations throughout the core.
+Because the project is pre-release, use a clear breaking migration rather than
+maintaining both schemas. The model registry may remain an internal mechanism,
+but its keys are the fixed `regular` and `fast` roles. A model-free configuration
+may omit the complete `models` section; a model-enabled configuration validates
+both required slots unless a later use case establishes that one slot is optional.
 
 The current `PublicConfig` also loads `.env` through `BaseSettings`. Migrate public settings to the selected typed configuration-file/CLI source so `.env` is exclusively a local secret carrier. Environment overrides for public settings should not be added implicitly; if operational overrides are later required, design them as an explicit, allowlisted configuration layer.
 
@@ -423,12 +502,15 @@ Every step follows red-green-refactor: add the specified deterministic test firs
 - Add an ADR for eager validation/lazy provider I/O and disabled implicit retries.
 - Resolve the two open decisions in Section 15 before contract implementation.
 
-**Gate:** ADR review agrees on ownership, lifecycle, and stable-key semantics.
+**Gate:** ADR review agrees on ownership, lifecycle, and purpose-slot semantics.
 
 ### Step 2: Add immutable identities and configuration
 
 - Implement model definition, provider profile, declared capabilities, pricing identity, and safe fingerprint.
-- Migrate primary model selection to a stable key.
+- Replace the arbitrary catalog/`primary_model_key` surface with typed `regular`
+  and `fast` model slots.
+- Add normalized `parameters`, explicit three-state `reasoning`, and controlled
+  `provider_options` configuration.
 - Add provider-specific secret references and update secret-boundary tests.
 - Reject unknown keys and unsafe configuration before client construction.
 
@@ -453,7 +535,7 @@ Every step follows red-green-refactor: add the specified deterministic test firs
 
 ### Step 5: Implement registry and composition
 
-- Register canonical definitions by stable key.
+- Register canonical definitions by the fixed `regular` and `fast` slot keys.
 - Reject duplicates and mismatched identity.
 - Construct local adapters at composition without network I/O.
 - Preserve startup without models/credentials when no model is selected.
@@ -489,7 +571,7 @@ Every step follows red-green-refactor: add the specified deterministic test firs
 - Assert normalized usage and cost-source semantics.
 - Record safe diagnostic identity, never prompts containing secrets or raw headers.
 
-**Gate:** both smoke paths pass locally with credentials and are runnable through separate opt-in workflows.
+**Gate:** both smoke paths pass locally with credentials. GitHub Actions execution is deferred to `todo_in_future`.
 
 ### Step 9: Documentation and closure
 
@@ -510,7 +592,7 @@ Every step follows red-green-refactor: add the specified deterministic test firs
 - invalid/embedded-credential endpoint;
 - unknown protocol/provider profile;
 - unknown selected model key;
-- duplicate configuration key;
+- duplicate slot registration;
 - safe deterministic fingerprint;
 - fingerprint changes for every behavior-affecting option;
 - fingerprint does not change for credential rotation;
@@ -660,27 +742,16 @@ External assertions must tolerate natural-language variation and provider-genera
 
 Update the normal `ci.yml` matrix to install the actual model dependencies and run all unit, component, contract, and integration tests with external tests excluded. No model credentials are available or required.
 
-### Provider smoke workflows
+### Provider smoke execution
 
-Create separate workflows so providers have independent credentials, schedules, and failure attribution:
+Phase 1A.2 provider smokes run locally only. They are excluded from deterministic CI and require credentials from the developer's local secret environment:
 
-- `openrouter-smoke.yml`;
-- `meta-model-api-smoke.yml`.
+- `uv run pytest -m openrouter`;
+- `uv run pytest -m meta_model_api`.
 
-Both workflows:
+Missing local credentials may skip the corresponding smoke with a clear reason. When credentials are present, provider or contract failures must fail the test. Model names and endpoints come from typed public model configuration, not environment variables.
 
-- run only through `workflow_dispatch` initially;
-- never run on pull requests;
-- use GitHub environment/repository secrets;
-- set a job timeout and per-request timeout;
-- install from the frozen lock;
-- run only the matching marker;
-- avoid verbose HTTP/provider logging;
-- upload no raw responses;
-- report adapter/provider/model/package versions and normalized safe failure category;
-- use concurrency limits to avoid duplicate spend.
-
-After several stable manual runs, an informational low-frequency schedule may be added. A live-provider outage should not block deterministic pull-request CI.
+GitHub Actions execution—manual or scheduled—is deferred to `todo_in_future`. No model-provider secrets should be configured in GitHub for Phase 1A.2.
 
 Add markers:
 
@@ -696,7 +767,12 @@ Phase 1A.2 is complete only when all items are true:
 - [x] `ModelAdapter` is typed, async, provider-neutral, and documented.
 - [x] OpenAI-compatible adapter is implemented with LangChain.
 - [x] Implicit provider-client retries are disabled (`max_retries=0`).
-- [x] Stable configuration keys resolve through `ModelRegistry`.
+- [x] `regular` and `fast` purpose-based slots replace `primary_model_key` and
+      provider-derived aliases.
+- [x] Parameter omission preserves provider defaults; reasoning distinguishes
+      `provider_default`, `disabled`, and `enabled`.
+- [x] Portable `parameters` and allowlisted `provider_options` are validated,
+      translated, and included in the safe fingerprint.
 - [x] Provider/protocol/model/configuration identities are separate.
 - [x] Client construction is local/eager and first network I/O occurs on invocation.
 - [x] Model-free startup still works without credentials or network.
@@ -707,12 +783,12 @@ Phase 1A.2 is complete only when all items are true:
 - [x] Credentials and live clients cannot enter serializable state.
 - [x] Scripted adapter contract passes deterministically.
 - [x] Full existing deterministic suite remains green (Python 3.14; ADR 0001 amendment dropped the 3.13 CI leg).
-- [ ] OpenRouter plain-text and structured-call smokes pass through the generic
-      adapter. *(test + workflow written; not yet run against a real account)*
+- [ ] OpenRouter plain-text and structured-call smokes pass locally through the generic
+      adapter. *(test written; record the validated live result)*
 - [ ] Meta-compatible plain-text and structured-call smokes pass through the same
-      contract. *(test + workflow written; not yet run against a real account)*
-- [x] Live smoke workflows are opt-in (`workflow_dispatch` only) and isolated from
-      pull requests.
+      contract. *(test written; record the validated local live result)*
+- [x] Model-provider smokes are local-only and excluded from GitHub Actions;
+      automation is deferred below.
 - [x] Documentation, `.env.example`, package README, and README are updated.
 - [x] Future-provider backlog is recorded and prioritized (§14, unchanged).
 
@@ -740,8 +816,18 @@ For every promoted integration, require:
 - rate-limit and error taxonomy mapping;
 - reproducibility identity rules;
 - deterministic adapter contract;
-- opt-in live smoke workflow;
+- local live smoke test;
 - a compatibility finding justifying a dedicated adapter rather than a profile.
+
+### Future smoke automation
+
+| Item | Current position | Activation condition |
+|---|---|---|
+| GitHub Actions provider smokes | Deferred; live OpenRouter and Meta tests run locally only | Explicit decision to store provider credentials in GitHub and accept automated external spend |
+| Manual `workflow_dispatch` smokes | Deferred | Secret ownership, missing-secret failure behavior, concurrency, timeouts, and cost limits are defined |
+| Scheduled provider smokes | Deferred after manual automation | Manual workflows are stable and a low-frequency monitoring need is demonstrated |
+
+When activated, use one isolated workflow and credential per provider, never run on pull requests, fail rather than skip when the workflow credential is absent, avoid raw-response artifacts, and keep live-provider failures non-blocking for deterministic pull-request CI.
 
 The backlog should be reviewed at the start of each model-integration increment. Provider names alone are not sufficient justification for new adapters.
 
@@ -767,10 +853,9 @@ Non-blocking follow-ups:
 | Hidden retries | Untracked spend and latency | Disable client retries; later orchestration owns attempts |
 | Provider-reported cost is mistaken as authoritative | Incorrect budgets/evaluation | Profile-specific authoritative extractor and provenance |
 | Credentials leak through exceptions or repr | Security incident | Bootstrap-only secrets, sanitization tests, no raw responses |
-| Model catalog conflates stable key with model name | Irreproducible configuration | Separate identities and fingerprint all safe behavior settings |
-| Live tests are flaky or expensive | Noisy CI and unwanted spend | Opt-in isolated workflows, cheap model, two bounded calls |
+| Slot purpose is conflated with provider/model identity | Provider changes leak into agent configuration | Fixed `regular`/`fast` slots and fingerprint all safe behavior settings |
+| Live tests are flaky or expensive | Unwanted spend or unreliable validation | Local-only execution, cheap model, two bounded calls; defer CI automation |
 | Shared client is mutated by tool binding | Cross-run contamination | Immutable adapter and concurrency contract test |
-| Meta endpoint remains ambiguous | Cannot prove exit criterion | Resolve exact service before live-workflow implementation |
 
 ## 17. Deliverables
 
@@ -780,7 +865,7 @@ Non-blocking follow-ups:
 - migrated bootstrap/configuration and provider-specific secrets;
 - deterministic unit, component, security, and reusable contract suites;
 - OpenRouter and Meta-compatible external smoke tests;
-- two opt-in CI workflows;
+- local OpenRouter and Meta Model API smoke commands;
 - relevant ADRs and provider compatibility findings;
 - updated root/system documentation;
 - maintained `todo_in_future` provider backlog.
