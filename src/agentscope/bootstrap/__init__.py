@@ -3,12 +3,12 @@
 The only package permitted to import ``agentscope.config.secret``.
 """
 
-from agentscope.bootstrap.clients import ModelClientFactory, default_model_client_factory
+from agentscope.bootstrap.clients import ModelAdapterFactory, default_model_adapter_factory
 from agentscope.bootstrap.composition import Platform, build_platform
 
 __all__ = [
-    "ModelClientFactory",
+    "ModelAdapterFactory",
     "Platform",
     "build_platform",
-    "default_model_client_factory",
+    "default_model_adapter_factory",
 ]

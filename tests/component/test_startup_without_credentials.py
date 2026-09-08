@@ -14,11 +14,11 @@ _HEAVY = ("openai", "phoenix", "opentelemetry", "langchain", "langgraph", "strea
 
 def test_starts_with_telemetry_disabled_and_no_model() -> None:
     platform = build_platform(
-        PublicConfig(_env_file=None),  # type: ignore[call-arg]
+        PublicConfig(),
         SecretConfig(_env_file=None),  # type: ignore[call-arg]
     )
     assert isinstance(platform.telemetry, NoOpSink)
-    assert platform.model_client is None
+    assert len(platform.models) == 0
 
 
 def test_default_build_does_not_import_heavy_dependencies() -> None:
@@ -26,7 +26,7 @@ def test_default_build_does_not_import_heavy_dependencies() -> None:
         if name.split(".")[0] in _HEAVY:
             del sys.modules[name]
     build_platform(
-        PublicConfig(_env_file=None),  # type: ignore[call-arg]
+        PublicConfig(),
         SecretConfig(_env_file=None),  # type: ignore[call-arg]
     )
     leaked = sorted({n.split(".")[0] for n in sys.modules if n.split(".")[0] in _HEAVY})

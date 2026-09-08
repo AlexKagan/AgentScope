@@ -18,6 +18,8 @@ Step 5 calls out, against the real sandbox.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from agentscope.runtime.requests import ExecRequest
@@ -35,7 +37,7 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> WorkspaceRoot:
 
 
 @pytest.fixture(scope="module")
-def runtime(workspace: WorkspaceRoot) -> SbxSandboxRuntime:
+def runtime(workspace: WorkspaceRoot) -> Iterator[SbxSandboxRuntime]:
     rt = SbxSandboxRuntime(SbxRuntimeConfig(), workspace)
     yield rt
     rt.close()

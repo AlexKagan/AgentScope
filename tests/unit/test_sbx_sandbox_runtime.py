@@ -287,8 +287,10 @@ class _MissingBinaryAlwaysRunner:
 def test_missing_sbx_binary_at_creation_raises_creation_error(fake_workspace: object) -> None:
     with pytest.raises(SandboxCreationError):
         SbxSandboxRuntime(
-            SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=_MissingBinaryAlwaysRunner())
-        )  # type: ignore[arg-type]
+            SbxRuntimeConfig(),
+            fake_workspace,  # type: ignore[arg-type]
+            cli=SbxCli(runner=_MissingBinaryAlwaysRunner()),
+        )
 
 
 def test_missing_sbx_binary_at_execute_is_infra_failure_not_raised(fake_workspace: object) -> None:
@@ -296,8 +298,10 @@ def test_missing_sbx_binary_at_execute_is_infra_failure_not_raised(fake_workspac
     # missing binary discovered during execute() is a normal, representable
     # INFRA_FAILURE outcome - not an exception (see ExecStatus's own docstring).
     runtime = SbxSandboxRuntime(
-        SbxRuntimeConfig(), fake_workspace, cli=SbxCli(runner=_MissingBinaryOnExecRunner())
-    )  # type: ignore[arg-type]
+        SbxRuntimeConfig(),
+        fake_workspace,  # type: ignore[arg-type]
+        cli=SbxCli(runner=_MissingBinaryOnExecRunner()),
+    )
     result = runtime.execute(ExecRequest(command=("echo", "hi")))
     assert result.status is ExecStatus.INFRA_FAILURE
     assert result.exit_code is None

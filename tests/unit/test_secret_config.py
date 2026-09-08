@@ -10,6 +10,8 @@ from agentscope.config.secret import MissingSecretError, SecretConfig
 def test_unset_fields_are_none() -> None:
     cfg = SecretConfig(_env_file=None)  # type: ignore[call-arg]
     assert cfg.openai_api_key is None
+    assert cfg.openrouter_api_key is None
+    assert cfg.meta_model_api_key is None
     assert cfg.phoenix_api_key is None
     assert cfg.otlp_headers is None
 
@@ -41,6 +43,8 @@ def test_safe_dump_lists_configured_fields(seeded_secret_env: dict[str, str]) ->
     cfg = SecretConfig()  # type: ignore[call-arg]
     assert cfg.safe_dump() == {
         "openai_api_key": "REDACTED",
+        "openrouter_api_key": "REDACTED",
+        "meta_model_api_key": "REDACTED",
         "phoenix_api_key": "REDACTED",
         "otlp_headers": "REDACTED",
     }

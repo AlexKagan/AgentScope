@@ -26,3 +26,13 @@ CI. The project owner has since decided 3.14 is the primary development target.
 - If a `future` dependency lacks a 3.14 wheel, only `uv sync --extra future` is
   affected, not Phase 0.
 - Inverting the design doc's version preference is recorded here deliberately.
+
+## Amendment (Phase 1A.2) — 3.13 leg dropped
+
+The 3.13 compatibility leg was never a product requirement, only a hedge. With
+the model stack now a first-class dependency and 3.14 the sole local and
+canonical target, maintaining a second CI leg (and a `>=3.13` claim that nothing
+exercised) costs more than it returns. `requires-python` is now **`>=3.14`**,
+the `ci.yml` matrix is `["3.14"]` only, and `ruff` `target-version` / `mypy`
+`python_version` are `3.14`. Re-add a leg only when a concrete deployment needs
+an older interpreter.

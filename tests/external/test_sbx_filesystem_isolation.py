@@ -16,6 +16,9 @@ whose contents we don't fully control).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 
 from agentscope.runtime.requests import ExecRequest
@@ -26,7 +29,7 @@ pytestmark = [pytest.mark.external, pytest.mark.sbx]
 
 
 @pytest.fixture(scope="module")
-def fixture_root(tmp_path_factory: pytest.TempPathFactory):
+def fixture_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("sbx-fs-isolation")
 
     workspace = root / "workspace"
@@ -46,12 +49,12 @@ def fixture_root(tmp_path_factory: pytest.TempPathFactory):
 
 
 @pytest.fixture(scope="module")
-def workspace(fixture_root) -> WorkspaceRoot:
+def workspace(fixture_root: Path) -> WorkspaceRoot:
     return WorkspaceRoot(path=fixture_root / "workspace")
 
 
 @pytest.fixture(scope="module")
-def runtime(workspace: WorkspaceRoot) -> SbxSandboxRuntime:
+def runtime(workspace: WorkspaceRoot) -> Iterator[SbxSandboxRuntime]:
     rt = SbxSandboxRuntime(SbxRuntimeConfig(), workspace)
     yield rt
     rt.close()
@@ -71,21 +74,25 @@ def test_workspace_is_writable(runtime: SbxSandboxRuntime, workspace: WorkspaceR
     assert (workspace.path / "new.txt").read_text() == "written-from-sandbox\n"
 
 
-def test_sibling_outside_directory_is_unavailable(runtime: SbxSandboxRuntime, fixture_root) -> None:
+def test_sibling_outside_directory_is_unavailable(
+    runtime: SbxSandboxRuntime, fixture_root: Path
+) -> None:
     outside_path = fixture_root / "outside" / "host-secret.txt"
     result = runtime.execute(ExecRequest(command=("cat", str(outside_path))))
     assert result.exit_code != 0
     assert b"host-secret-content" not in result.stdout
 
 
-def test_dotenv_outside_workspace_is_unavailable(runtime: SbxSandboxRuntime, fixture_root) -> None:
+def test_dotenv_outside_workspace_is_unavailable(
+    runtime: SbxSandboxRuntime, fixture_root: Path
+) -> None:
     dotenv_path = fixture_root / "outside" / ".env"
     result = runtime.execute(ExecRequest(command=("cat", str(dotenv_path))))
     assert result.exit_code != 0
     assert b"leaked-if-visible" not in result.stdout
 
 
-def test_source_sentinel_is_unavailable(runtime: SbxSandboxRuntime, fixture_root) -> None:
+def test_source_sentinel_is_unavailable(runtime: SbxSandboxRuntime, fixture_root: Path) -> None:
     sentinel_path = fixture_root / "source-sentinel" / "agentscope-secret-source.txt"
     result = runtime.execute(ExecRequest(command=("cat", str(sentinel_path))))
     assert result.exit_code != 0
@@ -110,7 +117,7 @@ def test_parent_directory_listing_does_not_reveal_siblings(runtime: SbxSandboxRu
 
 
 def test_symlink_inside_workspace_cannot_reach_outside_file(
-    runtime: SbxSandboxRuntime, workspace: WorkspaceRoot, fixture_root
+    runtime: SbxSandboxRuntime, workspace: WorkspaceRoot, fixture_root: Path
 ) -> None:
     # Phase 1A.1 Step 8: resolve_within only validates `cwd`, not command
     # arguments (see tests/unit/test_sbx_path_confinement.py) - so a symlink

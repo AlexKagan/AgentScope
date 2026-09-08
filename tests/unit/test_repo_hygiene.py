@@ -51,6 +51,8 @@ def test_secret_scanning_is_configured_or_deferred() -> None:
     assert has_gitleaks or documented
 
 
-@pytest.mark.parametrize("pkg", ["bootstrap", "architectures", "config", "runtime", "telemetry"])
+@pytest.mark.parametrize(
+    "pkg", ["bootstrap", "architectures", "config", "models", "runtime", "telemetry"]
+)
 def test_each_package_has_readme(pkg: str) -> None:
     assert (_ROOT / "src" / "agentscope" / pkg / "README.md").exists()

@@ -16,6 +16,8 @@ from tests.external._sbx_baseline import EXPECTED_SBX_VERSION
 FAKE_OPENAI_KEY = "sk-FAKE-DEADBEEF-0000000000000000"
 FAKE_PHOENIX_KEY = "phx-FAKE-1111111111111111"
 FAKE_OTLP_HEADERS = "authorization=Bearer sk-FAKE-2222222222222222"
+FAKE_OPENROUTER_KEY = "sk-or-FAKE-3333333333333333"
+FAKE_META_MODEL_KEY = "sk-FAKE-META-4444444444444444"
 
 
 @cache
@@ -41,8 +43,15 @@ def enforce_sbx_test_baseline(request: pytest.FixtureRequest) -> None:
 
 
 @pytest.fixture(autouse=True)
-def clean_agentscope_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove any ``AGENTSCOPE_*`` variables so tests are hermetic."""
+def clean_agentscope_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """Remove any ``AGENTSCOPE_*`` variables so tests are hermetic.
+
+    ``external``-marked tests are exempt: they legitimately talk to a real
+    service and need the operator's real ``AGENTSCOPE_*`` configuration (API
+    keys, endpoints) to reach them.
+    """
+    if request.node.get_closest_marker("external") is not None:
+        return
     for key in list(os.environ):
         if key.startswith("AGENTSCOPE_"):
             monkeypatch.delenv(key, raising=False)
@@ -53,6 +62,8 @@ def seeded_secret_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Seed fake secrets into the environment and return the literal values."""
     values = {
         "AGENTSCOPE_OPENAI_API_KEY": FAKE_OPENAI_KEY,
+        "AGENTSCOPE_OPENROUTER_API_KEY": FAKE_OPENROUTER_KEY,
+        "AGENTSCOPE_META_MODEL_API_KEY": FAKE_META_MODEL_KEY,
         "AGENTSCOPE_PHOENIX_API_KEY": FAKE_PHOENIX_KEY,
         "AGENTSCOPE_OTLP_HEADERS": FAKE_OTLP_HEADERS,
     }
@@ -64,7 +75,13 @@ def seeded_secret_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 @pytest.fixture
 def all_fake_secrets() -> tuple[str, ...]:
     """Every seeded fake secret substring, for absence assertions."""
-    return (FAKE_OPENAI_KEY, FAKE_PHOENIX_KEY, FAKE_OTLP_HEADERS)
+    return (
+        FAKE_OPENAI_KEY,
+        FAKE_OPENROUTER_KEY,
+        FAKE_META_MODEL_KEY,
+        FAKE_PHOENIX_KEY,
+        FAKE_OTLP_HEADERS,
+    )
 
 
 @pytest.fixture

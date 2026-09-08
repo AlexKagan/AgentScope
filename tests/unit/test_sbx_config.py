@@ -89,7 +89,7 @@ def test_sbx_config_accepts_valid_memory_at_or_above_minimum(memory_limit: str) 
 )
 def test_sbx_config_rejects_invalid_timeout(field: str, value: float) -> None:
     with pytest.raises(RuntimeContractError):
-        SbxRuntimeConfig(**{field: value})
+        SbxRuntimeConfig(**{field: value})  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

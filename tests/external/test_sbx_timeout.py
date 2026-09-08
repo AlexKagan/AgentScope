@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from collections.abc import Iterator
 
 import pytest
 
@@ -43,7 +44,7 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> WorkspaceRoot:
 
 
 @pytest.fixture
-def runtime(workspace: WorkspaceRoot) -> SbxSandboxRuntime:
+def runtime(workspace: WorkspaceRoot) -> Iterator[SbxSandboxRuntime]:
     rt = SbxSandboxRuntime(SbxRuntimeConfig(), workspace)
     yield rt
     rt.close()

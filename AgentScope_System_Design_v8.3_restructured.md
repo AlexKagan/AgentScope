@@ -244,10 +244,12 @@ class ExecRequest:
     timeout_s: float | None = None
     max_output_bytes: int = 1_000_000
 
+
 class ExecStatus(StrEnum):
     COMPLETED = "completed"
     TIMED_OUT = "timed_out"
     INFRA_FAILURE = "infra_failure"
+
 
 @dataclass(frozen=True, slots=True)
 class ExecResult:

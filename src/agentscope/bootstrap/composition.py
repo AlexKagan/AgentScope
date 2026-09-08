@@ -1,9 +1,10 @@
 """The trusted composition root (design 8.3, 12).
 
 This module is the *only* place in ``agentscope`` that consumes
-:class:`SecretConfig`. It turns credentials into constructed clients and
-telemetry exporters, then injects those into a :class:`Platform`. Every other
-component receives the narrowest capability it needs - never ``SecretConfig``.
+:class:`SecretConfig`. It turns credentials into constructed clients, model
+adapters, and telemetry exporters, then injects those into a :class:`Platform`.
+Every other component receives the narrowest capability it needs - never
+``SecretConfig``.
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agentscope.architectures.registry import ArchitectureRegistry
-from agentscope.bootstrap.clients import ModelClientFactory, default_model_client_factory
+from agentscope.bootstrap.clients import ModelAdapterFactory, default_model_adapter_factory
 from agentscope.config.public import PublicConfig
 from agentscope.config.secret import SecretConfig
+from agentscope.models.registry import ModelRegistry
 from agentscope.telemetry.noop import NoOpSink
 from agentscope.telemetry.sink import TelemetrySink
 
@@ -30,7 +32,7 @@ class Platform:
     config: PublicConfig
     registry: ArchitectureRegistry
     telemetry: TelemetrySink
-    model_client: object | None = field(default=None, repr=False)
+    models: ModelRegistry = field(default_factory=ModelRegistry, repr=False)
 
 
 def build_platform(
@@ -38,7 +40,7 @@ def build_platform(
     secret: SecretConfig,
     *,
     registry: ArchitectureRegistry | None = None,
-    model_client_factory: ModelClientFactory | None = None,
+    model_adapter_factory: ModelAdapterFactory | None = None,
     telemetry_factory: TelemetryFactory | None = None,
 ) -> Platform:
     """Compose a :class:`Platform` from validated public and secret config."""
@@ -54,15 +56,17 @@ def build_platform(
     else:
         telemetry = NoOpSink()
 
-    model_client: object | None = None
-    model_id = public.model_identifier
-    if model_id is not None:
-        factory = model_client_factory or default_model_client_factory
-        model_client = factory(model_id, secret.require("openai_api_key"))
+    models = ModelRegistry()
+    if public.models:
+        factory = model_adapter_factory or default_model_adapter_factory
+        for key in sorted(public.models):
+            definition = public.models[key]
+            api_key = secret.require(definition.credential_ref)
+            models.register(definition, factory(definition, api_key))
 
     return Platform(
         config=public,
         registry=registry,
         telemetry=telemetry,
-        model_client=model_client,
+        models=models,
     )

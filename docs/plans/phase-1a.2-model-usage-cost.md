@@ -1,6 +1,7 @@
 # Phase 1A.2 implementation and test plan
 
-**Status:** Proposed
+**Status:** Implemented (deterministic scope) — live provider smokes are written
+and opt-in but not yet run against real accounts. See §13 for the checklist.
 **Target:** Phase 1A.2 — model integration, normalized usage, and cost
 **Baseline:** Phase 1A.1 and `AgentScope_System_Design_v8.3_restructured.md`
 **Exit criterion:** Deterministic scripted tests pass, and opt-in OpenRouter and Meta-compatible smoke paths prove the same public model contract with native structured tool calling.
@@ -406,7 +407,7 @@ Do not reuse `openai_api_key` merely because the wire protocol is OpenAI-compati
 1. Move the LangChain packages required by the model implementation out of the speculative `future` extra and into an explicit `models` extra or the default runtime dependencies, depending on whether model-free minimal installation remains a product requirement.
 2. Add and pin the LangChain OpenAI provider integration compatible with the repository's LangChain version (normally `langchain-openai`); do not assume the base `langchain` package supplies `ChatOpenAI`.
 3. Keep imports lazy from bootstrap if model-free startup without the extra is supported. Produce a focused installation error rather than an import traceback.
-4. Regenerate `uv.lock` and run the full Python 3.13/3.14 matrix.
+4. Regenerate `uv.lock` and run the full test suite on Python 3.14 (the sole CI leg as of this phase; see ADR 0001 amendment).
 5. Record the exact provider-package versions in live-smoke diagnostics.
 
 Recommended choice for Phase 1A.2: make model support a first-class default dependency because it is now implemented product functionality. Preserve model-free **runtime configuration**, not a partially installed runtime. This reduces CI combinations and avoids a feature that exists in source but is absent from the standard installation.
@@ -651,7 +652,7 @@ External assertions must tolerate natural-language variation and provider-genera
 - no `SecretConfig` outside bootstrap;
 - no provider response parsing outside `agentscope.models`;
 - deterministic suite passes without network and without provider credentials;
-- Python 3.13 and 3.14 remain supported.
+- Python 3.14 is the supported and CI-tested interpreter (ADR 0001 amendment dropped the 3.13 leg; `requires-python = ">=3.14"`).
 
 ## 12. CI plan
 
@@ -692,25 +693,28 @@ Both imply `external` by convention and must remain excluded by default.
 
 Phase 1A.2 is complete only when all items are true:
 
-- [ ] `ModelAdapter` is typed, async, provider-neutral, and documented.
-- [ ] OpenAI-compatible adapter is implemented with LangChain.
-- [ ] Implicit provider-client retries are disabled.
-- [ ] Stable configuration keys resolve through `ModelRegistry`.
-- [ ] Provider/protocol/model/configuration identities are separate.
-- [ ] Client construction is local/eager and first network I/O occurs on invocation.
-- [ ] Model-free startup still works without credentials or network.
-- [ ] Native structured tool calls work without free-form action parsing.
-- [ ] Usage is normalized once into `LLMUsage`.
-- [ ] Cost precedence and explicit unknown cost are implemented.
-- [ ] Errors use the normalized taxonomy and retain safe chained causes.
-- [ ] Credentials and live clients cannot enter serializable state.
-- [ ] Scripted adapter contract passes deterministically.
-- [ ] Full existing deterministic suite remains green on Python 3.13 and 3.14.
-- [ ] OpenRouter plain-text and structured-call smokes pass through the generic adapter.
-- [ ] Meta-compatible plain-text and structured-call smokes pass through the same contract.
-- [ ] Live smoke workflows are opt-in and isolated from pull requests.
-- [ ] Documentation, `.env.example`, package README, and system status are updated.
-- [ ] Future-provider backlog is recorded and prioritized.
+- [x] `ModelAdapter` is typed, async, provider-neutral, and documented.
+- [x] OpenAI-compatible adapter is implemented with LangChain.
+- [x] Implicit provider-client retries are disabled (`max_retries=0`).
+- [x] Stable configuration keys resolve through `ModelRegistry`.
+- [x] Provider/protocol/model/configuration identities are separate.
+- [x] Client construction is local/eager and first network I/O occurs on invocation.
+- [x] Model-free startup still works without credentials or network.
+- [x] Native structured tool calls work without free-form action parsing.
+- [x] Usage is normalized once into `LLMUsage`.
+- [x] Cost precedence and explicit unknown cost are implemented.
+- [x] Errors use the normalized taxonomy and retain safe chained causes.
+- [x] Credentials and live clients cannot enter serializable state.
+- [x] Scripted adapter contract passes deterministically.
+- [x] Full existing deterministic suite remains green (Python 3.14; ADR 0001 amendment dropped the 3.13 CI leg).
+- [ ] OpenRouter plain-text and structured-call smokes pass through the generic
+      adapter. *(test + workflow written; not yet run against a real account)*
+- [ ] Meta-compatible plain-text and structured-call smokes pass through the same
+      contract. *(test + workflow written; not yet run against a real account)*
+- [x] Live smoke workflows are opt-in (`workflow_dispatch` only) and isolated from
+      pull requests.
+- [x] Documentation, `.env.example`, package README, and README are updated.
+- [x] Future-provider backlog is recorded and prioritized (§14, unchanged).
 
 ## 14. Future-provider backlog (`todo_in_future`)
 

@@ -32,6 +32,8 @@ class SecretConfig(BaseSettings):
     )
 
     openai_api_key: SecretStr | None = None
+    openrouter_api_key: SecretStr | None = None
+    meta_model_api_key: SecretStr | None = None
     phoenix_api_key: SecretStr | None = None
     otlp_headers: SecretStr | None = None
 

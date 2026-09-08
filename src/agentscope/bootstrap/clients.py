@@ -1,28 +1,30 @@
-"""Trusted client construction (design 8.3).
+"""Trusted model-adapter construction (design 8.3, D4).
 
 This is the seam where a raw credential becomes a narrow authenticated
-capability. Phase 0 ships no model provider adapter, so the default factory
-raises; tests inject a fake. Only :mod:`agentscope.bootstrap` calls this.
+capability: a :class:`~agentscope.models.protocol.ModelAdapter`. Construction is
+local and eager (no network); the first provider I/O happens on ``ainvoke``.
+Only :mod:`agentscope.bootstrap` calls this. The LangChain import is lazy so a
+model-free runtime configuration never loads a provider package.
 """
 
 from __future__ import annotations
 
 from typing import Protocol
 
-from agentscope.config.models import ModelIdentifier
+from agentscope.models.configuration import ModelDefinition
+from agentscope.models.protocol import ModelAdapter
 
-__all__ = ["ModelClientFactory", "default_model_client_factory"]
-
-
-class ModelClientFactory(Protocol):
-    """Builds an authenticated model client from an identifier and a key."""
-
-    def __call__(self, model: ModelIdentifier, api_key: str) -> object: ...
+__all__ = ["ModelAdapterFactory", "default_model_adapter_factory"]
 
 
-def default_model_client_factory(model: ModelIdentifier, api_key: str) -> object:
-    """Phase 0 placeholder - model invocation arrives in Phase 1A."""
-    raise NotImplementedError(
-        "model invocation is not implemented in Phase 0 (arrives in Phase 1A); "
-        "inject a model_client_factory to wire a client"
-    )
+class ModelAdapterFactory(Protocol):
+    """Builds a live model adapter from a definition and its resolved credential."""
+
+    def __call__(self, definition: ModelDefinition, api_key: str) -> ModelAdapter: ...
+
+
+def default_model_adapter_factory(definition: ModelDefinition, api_key: str) -> ModelAdapter:
+    """Construct the generic OpenAI-compatible LangChain adapter."""
+    from agentscope.models.openai_compatible import OpenAICompatibleChatAdapter
+
+    return OpenAICompatibleChatAdapter(definition, api_key)

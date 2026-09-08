@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agentscope.architectures.identity import ArchitectureIdentity
-from agentscope.config.models import ModelIdentifier
+from agentscope.models.configuration import ModelDefinition
+from agentscope.models.identity import SafeModelIdentity
+from agentscope.models.requests import ModelRequest
+from agentscope.models.responses import ModelResponse
 from agentscope.runtime.requests import ExecRequest
 from agentscope.runtime.results import ExecResult, ExecStatus
 from agentscope.runtime.workspace import WorkspaceRoot
@@ -49,17 +52,38 @@ class FakeSandboxRuntime:
         self.close_calls += 1
 
 
-class FakeModelClient:
-    """An opaque stand-in for an authenticated model client."""
+class FakeModelAdapter:
+    """A ``ModelAdapter`` whose identity matches its definition; never does I/O."""
+
+    def __init__(self, definition: ModelDefinition, response: ModelResponse | None = None) -> None:
+        self._identity = definition.identity()
+        self._response = response
+        self.calls: list[ModelRequest] = []
+        self.close_calls = 0
+
+    @property
+    def identity(self) -> SafeModelIdentity:
+        return self._identity
+
+    async def ainvoke(self, request: ModelRequest) -> ModelResponse:
+        self.calls.append(request)
+        if self._response is None:
+            raise NotImplementedError("FakeModelAdapter has no scripted response")
+        return self._response
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
 
 
-class FakeModelClientFactory:
-    """Records the ``(model, api_key)`` it was called with; returns a fake client."""
+class FakeModelAdapterFactory:
+    """Records the ``(definition, api_key)`` it was called with; returns a fake adapter."""
 
     def __init__(self) -> None:
-        self.calls: list[tuple[ModelIdentifier, str]] = []
-        self.client = FakeModelClient()
+        self.calls: list[tuple[ModelDefinition, str]] = []
+        self.adapters: list[FakeModelAdapter] = []
 
-    def __call__(self, model: ModelIdentifier, api_key: str) -> object:
-        self.calls.append((model, api_key))
-        return self.client
+    def __call__(self, definition: ModelDefinition, api_key: str) -> FakeModelAdapter:
+        self.calls.append((definition, api_key))
+        adapter = FakeModelAdapter(definition)
+        self.adapters.append(adapter)
+        return adapter

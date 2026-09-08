@@ -17,6 +17,8 @@ default because the real backend has no fixed ``/workspace`` mount point.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from agentscope.runtime.errors import DisallowedEnvVarError
@@ -33,7 +35,7 @@ def workspace(tmp_path_factory: pytest.TempPathFactory) -> WorkspaceRoot:
 
 
 @pytest.fixture(scope="module")
-def runtime(workspace: WorkspaceRoot) -> SbxSandboxRuntime:
+def runtime(workspace: WorkspaceRoot) -> Iterator[SbxSandboxRuntime]:
     rt = SbxSandboxRuntime(
         SbxRuntimeConfig(
             env_allowlist=frozenset({"LANG", "LC_ALL", "LC_CTYPE", "TZ", "AGENTSCOPE_SAFE_TEST"})
