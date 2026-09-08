@@ -34,7 +34,7 @@ class LLMUsage(BaseModel):
     total_tokens: int = Field(ge=0)
     cached_input_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
-    provider_reported_cost_usd: Decimal | None = None
+    provider_reported_cost_usd: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     total_discrepancy: bool = False
 
 
@@ -61,9 +61,14 @@ def _cost(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        result = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:  # pragma: no cover - defensive
         raise ModelResponseNormalizationError("provider-reported cost is not a number") from exc
+    if not result.is_finite() or result < 0:
+        raise ModelResponseNormalizationError(
+            "provider-reported cost must be a finite non-negative number"
+        )
+    return result
 
 
 def normalize_usage(
@@ -104,6 +109,15 @@ def normalize_usage(
 
     has_reasoning, reasoning_raw = _first_present(raw, _REASONING_KEYS)
     reasoning = _token_int(reasoning_raw, "reasoning_tokens") if has_reasoning else None
+
+    if cached is not None and cached > input_tokens:
+        raise ModelResponseNormalizationError(
+            f"cached input tokens ({cached}) exceed input tokens ({input_tokens})"
+        )
+    if reasoning is not None and reasoning > output_tokens:
+        raise ModelResponseNormalizationError(
+            f"reasoning tokens ({reasoning}) exceed output tokens ({output_tokens})"
+        )
 
     return LLMUsage(
         input_tokens=input_tokens,

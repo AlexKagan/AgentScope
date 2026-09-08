@@ -6,10 +6,11 @@ to find (see ``tests/component/test_no_secretconfig_outside_bootstrap.py``).
 """
 
 from agentscope.config.loader import load_public_config
-from agentscope.config.public import Limits, PublicConfig, RuntimeMode
+from agentscope.config.public import Limits, ModelSlots, PublicConfig, RuntimeMode
 
 __all__ = [
     "Limits",
+    "ModelSlots",
     "PublicConfig",
     "RuntimeMode",
     "load_public_config",

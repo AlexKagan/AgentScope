@@ -5,7 +5,7 @@ This package owns AgentScope's **public model contract** and the normalization
 of everything that crosses it: the async `ModelAdapter` protocol, validated
 requests and tool schemas, the normalized response and structured tool calls,
 token usage, cost with provenance, safe identity and reproducibility
-fingerprint, the stable-key registry, and the error taxonomy.
+fingerprint, the purpose-slot registry, and the error taxonomy.
 
 It does **not** own (design §12):
 
@@ -22,20 +22,23 @@ exception types never escape `openai_compatible.py`.
 ## Public contracts
 - `ModelAdapter` (`protocol.py`) — `async ainvoke(ModelRequest) -> ModelResponse`,
   `identity`, `async aclose()`. One `ainvoke` == one provider attempt; never retries.
-- `ModelRequest`, `Message`, `ToolDefinition`, `Role` (`requests.py`) — frozen,
-  validated at the boundary. No callable tools, no per-call identity overrides.
+- `ModelRequest`, `Message`, `ToolDefinition`, `Role` (`requests.py`) — deeply
+  immutable and validated at the boundary. Assistant messages retain tool calls
+  so complete assistant-call → tool-result turns can be replayed. No callable
+  tools or per-call identity overrides.
 - `ModelResponse`, `ToolCall`, `ToolCallOrigin`, `FinishReason` (`responses.py`) —
   frozen normalization. Raw provider payloads are never retained.
 - `LLMUsage` + `normalize_usage` (`usage.py`) — the single token-accounting type.
 - `PriceCard`, `LLMCost`, `CostSource`, `calculate_cost` (`cost.py`) — `Decimal`
   arithmetic, precedence (provider-reported → configured → unknown), unknown is
   `None` + `unknown`, never `0.0`.
-- `ModelDefinition`, `Capability`, `BUILTIN_PROVIDER_PROFILES`, `validate_endpoint`
+- `ModelDefinition`, `ModelParameters`, `ReasoningConfig`, `ReasoningMode`,
+  `Capability`, `BUILTIN_PROVIDER_PROFILES`, `validate_endpoint`
   (`configuration.py`) — validated, frozen, safely serializable configuration.
 - `SafeModelIdentity`, `ProviderProfile`, `fingerprint` (`identity.py`) —
   credential-free identity; the fingerprint covers every safe behavior-affecting
   setting and is stable across credential rotation.
-- `ModelRegistry`, `ResolvedModel` (`registry.py`) — stable-key → (definition,
+- `ModelRegistry`, `ResolvedModel` (`registry.py`) — `regular`/`fast` slot → (definition,
   adapter) with deterministic duplicate/unknown/identity-mismatch errors.
 - `ModelError` and its taxonomy (`errors.py`).
 
@@ -48,7 +51,7 @@ exception types never escape `openai_compatible.py`.
 - **Outward (who imports this):** `agentscope.bootstrap` (constructs adapters,
   builds the registry) and, later, `architectures/` (consume the protocol only —
   no credentials, no provider payloads).
-- **Third-party:** `pydantic` (validation/immutability) everywhere;
+- **Third-party:** `pydantic` and `jsonschema` (validation/immutability);
   `langchain`, `langchain-openai`, `langchain-core`, `openai` **only** in
   `openai_compatible.py`, imported lazily from bootstrap so a model-free runtime
   configuration never loads a provider package.
@@ -58,8 +61,9 @@ exception types never escape `openai_compatible.py`.
 misuse — raised before any I/O), `ModelCapabilityError`, `ModelAuthenticationError`,
 `ModelAuthorizationError`, `ModelRateLimitError`, `ModelTimeoutError`,
 `ModelConnectionError`, `ModelInvalidRequestError`, `ModelProviderError`,
-`ModelResponseNormalizationError`. The original exception is always the chained
-cause; messages carry no credentials, headers, request bodies, or raw responses.
+`ModelResponseNormalizationError`. Wrapped provider and unexpected normalization
+exceptions retain the original chained cause; messages carry no credentials,
+headers, request bodies, or raw responses.
 
 ## Tests
 - `tests/unit/test_model_*.py` — configuration/identity, request/tool validation,
@@ -87,6 +91,6 @@ identity or fingerprint, and never in an error message. Endpoints are validated
 ## Deferred work
 Responses API mode, streaming/partial tool calls, multimodal, dedicated
 provider connectors (only if a recorded compatibility finding proves the generic
-adapter insufficient), authoritative provider-cost extractors per profile, and a
+adapter insufficient), additional authoritative provider-cost extractors, and a
 synchronous convenience facade. See `docs/plans/phase-1a.2-model-usage-cost.md`
 §14 for the future-provider backlog.

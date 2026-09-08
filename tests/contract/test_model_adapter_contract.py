@@ -19,6 +19,7 @@ from agentscope.models.configuration import ModelDefinition
 from agentscope.models.cost import CostSource, PriceCard
 from agentscope.models.errors import (
     ModelError,
+    ModelInvalidRequestError,
     ModelProviderError,
     ModelRateLimitError,
     ModelResponseNormalizationError,
@@ -26,7 +27,7 @@ from agentscope.models.errors import (
 )
 from agentscope.models.openai_compatible import OpenAICompatibleChatAdapter
 from agentscope.models.requests import Message, ModelRequest, Role, ToolDefinition
-from agentscope.models.responses import ToolCallOrigin
+from agentscope.models.responses import ToolCall, ToolCallOrigin
 from tests.contract._scripted_model import (
     ScriptedChatModel,
     ScriptedMessage,
@@ -63,7 +64,7 @@ def _adapter(
     adapter = OpenAICompatibleChatAdapter(
         _defn(pricing=pricing),
         "fake-key",
-        chat_model_factory=lambda: model,
+        chat_model_factory=lambda **_kwargs: model,
         authoritative_cost_extractor=cost_extractor,
     )
     return adapter, model
@@ -220,6 +221,12 @@ def test_missing_usage_is_normalization_error() -> None:
         run(adapter.ainvoke(_text_request()))
 
 
+def test_response_without_text_or_tool_calls_is_normalization_error() -> None:
+    adapter, _ = _adapter(ScriptedMessage(content="", usage_metadata=usage()))
+    with pytest.raises(ModelResponseNormalizationError, match="neither assistant text nor tool"):
+        run(adapter.ainvoke(_text_request()))
+
+
 # -- cost -----------------------------------------------------------------------
 
 
@@ -227,11 +234,23 @@ def test_authoritative_provider_cost_wins() -> None:
     adapter, _ = _adapter(
         ScriptedMessage(content="ok", usage_metadata=usage(1000, 500)),
         pricing=_PRICING,
-        cost_extractor=lambda _meta: Decimal("0.99"),
+        cost_extractor=lambda _raw: Decimal("0.99"),
     )
     resp = run(adapter.ainvoke(_text_request()))
     assert resp.cost.source is CostSource.PROVIDER_REPORTED
     assert resp.cost.amount_usd == Decimal("0.99")
+    assert resp.usage.provider_reported_cost_usd == Decimal("0.99")
+
+
+def test_openrouter_cost_is_extracted_from_raw_usage_metadata() -> None:
+    message = ScriptedMessage(
+        content="ok",
+        usage_metadata={**usage(1000, 500), "cost": "0.003"},
+    )
+    adapter, _ = _adapter(message)
+    response = run(adapter.ainvoke(_text_request()))
+    assert response.usage.provider_reported_cost_usd == Decimal("0.003")
+    assert response.cost.source is CostSource.PROVIDER_REPORTED
 
 
 def test_configured_pricing_is_exact() -> None:
@@ -266,6 +285,24 @@ def test_unclassified_provider_failure_maps_to_provider_error() -> None:
     adapter, _ = _adapter(named_error("WeirdError", "???"))
     with pytest.raises(ModelProviderError):
         run(adapter.ainvoke(_text_request()))
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (401, "ModelAuthenticationError"),
+        (403, "ModelAuthorizationError"),
+        (408, "ModelTimeoutError"),
+        (429, "ModelRateLimitError"),
+        (422, "ModelInvalidRequestError"),
+        (503, "ModelProviderError"),
+    ],
+)
+def test_generic_http_status_maps_to_stable_category(status: int, expected: str) -> None:
+    adapter, _ = _adapter(named_error("APIStatusError", status_code=status))
+    with pytest.raises(ModelError) as excinfo:
+        run(adapter.ainvoke(_text_request()))
+    assert type(excinfo.value).__name__ == expected
 
 
 def test_timeout_is_normalized_and_only_one_attempt() -> None:
@@ -308,3 +345,152 @@ def test_cancellation_propagates_and_is_not_rewritten() -> None:
 
 def test_cancellation_error_is_not_a_model_error() -> None:
     assert not issubclass(asyncio.CancelledError, ModelError)
+
+
+def test_per_call_options_are_forwarded() -> None:
+    adapter, model = _adapter(ScriptedMessage(content="ok", usage_metadata=usage()))
+    request = ModelRequest(messages=_text_request().messages, options={"temperature": 0.2})
+    run(adapter.ainvoke(request))
+    assert model.invoke_kwargs == [{"temperature": 0.2}]
+
+
+def test_unknown_per_call_option_is_rejected_before_io() -> None:
+    adapter, model = _adapter(ScriptedMessage(content="ok", usage_metadata=usage()))
+    request = ModelRequest(messages=_text_request().messages, options={"logprobs": True})
+    with pytest.raises(ModelInvalidRequestError, match="not allowlisted"):
+        run(adapter.ainvoke(request))
+    assert model.calls == 0
+
+
+def test_definition_options_are_passed_to_client_factory() -> None:
+    model = ScriptedChatModel(ScriptedMessage(content="ok", usage_metadata=usage()))
+    received: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> ScriptedChatModel:
+        received.update(kwargs)
+        return model
+
+    definition = _defn(
+        parameters={"temperature": 0.1, "max_output_tokens": 1000, "verbosity": "high"},
+        capabilities=["text", "tool_calling", "reasoning"],
+        reasoning={"mode": "enabled", "effort": "high"},
+        provider_options={"parallel_tool_calls": False},
+    )
+    OpenAICompatibleChatAdapter(definition, "fake-key", chat_model_factory=factory)
+    assert received["temperature"] == 0.1
+    assert received["max_tokens"] == 1000
+    assert received["extra_body"] == {
+        "parallel_tool_calls": False,
+        "verbosity": "high",
+        "reasoning": {"exclude": False, "effort": "high"},
+    }
+    assert received["max_retries"] == 0
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "expected"),
+    [
+        ({}, None),
+        ({"mode": "provider_default"}, None),
+        ({"mode": "disabled"}, {"effort": "none"}),
+        ({"mode": "enabled", "max_tokens": 500}, {"exclude": False, "max_tokens": 500}),
+    ],
+)
+def test_openrouter_reasoning_translation(
+    reasoning: dict[str, object], expected: dict[str, object] | None
+) -> None:
+    received: dict[str, Any] = {}
+
+    def factory(**kwargs: Any) -> ScriptedChatModel:
+        received.update(kwargs)
+        return ScriptedChatModel(ScriptedMessage(content="ok", usage_metadata=usage()))
+
+    capabilities = ["text", "tool_calling"]
+    if reasoning.get("mode") == "enabled":
+        capabilities.append("reasoning")
+    definition = _defn(reasoning=reasoning, capabilities=capabilities)
+    OpenAICompatibleChatAdapter(definition, "fake-key", chat_model_factory=factory)
+    if expected is None:
+        assert "extra_body" not in received
+    else:
+        assert received["extra_body"]["reasoning"] == expected
+
+
+def test_assistant_tool_call_and_tool_result_round_trip_to_langchain() -> None:
+    message = ScriptedMessage(content="done", usage_metadata=usage())
+    adapter, model = _adapter(message)
+    request = ModelRequest(
+        messages=(
+            Message(role=Role.USER, content="temperature?"),
+            Message(
+                role=Role.ASSISTANT,
+                content="",
+                tool_calls=(
+                    ToolCall(id="call_1", name="lookup_temperature", arguments={"city": "Paris"}),
+                ),
+            ),
+            Message(role=Role.TOOL, content='{"temperature": 20}', tool_call_id="call_1"),
+        )
+    )
+    run(adapter.ainvoke(request))
+    assistant = model.received[0][1]
+    assert assistant.tool_calls[0]["id"] == "call_1"
+    assert assistant.tool_calls[0]["args"] == {"city": "Paris"}
+
+
+def test_normalization_value_error_is_wrapped() -> None:
+    def broken_extractor(_raw: Any) -> Any:
+        raise ValueError("bad provider cost")
+
+    adapter, _ = _adapter(
+        ScriptedMessage(content="ok", usage_metadata=usage()),
+        cost_extractor=broken_extractor,
+    )
+    with pytest.raises(ModelResponseNormalizationError) as excinfo:
+        run(adapter.ainvoke(_text_request()))
+    assert isinstance(excinfo.value.__cause__, ValueError)
+
+
+def test_close_is_idempotent_and_closes_async_client() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def close(self) -> None:
+            self.calls += 1
+
+    model = ScriptedChatModel(ScriptedMessage(content="ok", usage_metadata=usage()))
+    client = Client()
+    model.root_async_client = client
+    adapter = OpenAICompatibleChatAdapter(
+        _defn(), "fake-key", chat_model_factory=lambda **_kwargs: model
+    )
+    run(adapter.aclose())
+    run(adapter.aclose())
+    assert client.calls == 1
+    with pytest.raises(ModelProviderError, match="closed"):
+        run(adapter.ainvoke(_text_request()))
+
+
+def test_close_supports_sync_client_and_missing_client() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def close(self) -> None:
+            self.calls += 1
+
+    model = ScriptedChatModel(ScriptedMessage(content="ok", usage_metadata=usage()))
+    client = Client()
+    model.async_client = client
+    adapter = OpenAICompatibleChatAdapter(
+        _defn(), "fake-key", chat_model_factory=lambda **_kwargs: model
+    )
+    run(adapter.aclose())
+    assert client.calls == 1
+
+    model_without_client = ScriptedChatModel(ScriptedMessage(content="ok", usage_metadata=usage()))
+    adapter_without_client = OpenAICompatibleChatAdapter(
+        _defn(), "fake-key", chat_model_factory=lambda **_kwargs: model_without_client
+    )
+    run(adapter_without_client.aclose())

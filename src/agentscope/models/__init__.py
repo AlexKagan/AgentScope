@@ -9,7 +9,14 @@ LangChain types are *not* re-exported here and must not leak past the adapter.
 
 from __future__ import annotations
 
-from agentscope.models.configuration import BUILTIN_PROVIDER_PROFILES, Capability, ModelDefinition
+from agentscope.models.configuration import (
+    BUILTIN_PROVIDER_PROFILES,
+    Capability,
+    ModelDefinition,
+    ModelParameters,
+    ReasoningConfig,
+    ReasoningMode,
+)
 from agentscope.models.cost import CostSource, LLMCost, PriceCard, calculate_cost
 from agentscope.models.errors import (
     ModelAuthenticationError,
@@ -48,6 +55,7 @@ __all__ = [
     "ModelDefinition",
     "ModelError",
     "ModelInvalidRequestError",
+    "ModelParameters",
     "ModelProviderError",
     "ModelRateLimitError",
     "ModelRegistry",
@@ -57,6 +65,8 @@ __all__ = [
     "ModelTimeoutError",
     "PriceCard",
     "ProviderProfile",
+    "ReasoningConfig",
+    "ReasoningMode",
     "ResolvedModel",
     "Role",
     "SafeModelIdentity",

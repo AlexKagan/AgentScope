@@ -8,14 +8,12 @@ Needs ``AGENTSCOPE_META_MODEL_API_KEY`` (from your shell env or the local,
 git-ignored ``.env``). Verifies the documented Meta cookbook contract —
 OpenAI-compatible Chat Completions at ``https://api.meta.ai/v1`` with
 ``muse-spark-1.3`` and native function/tool calling — through the same
-``OpenAICompatibleChatAdapter`` (LangChain ``ChatOpenAI``). The smoke model can be
-overridden with AGENTSCOPE_META_SMOKE_MODEL because account availability changes.
+``OpenAICompatibleChatAdapter`` (LangChain ``ChatOpenAI``). Change the typed
+definition deliberately if account availability changes.
 Record any incompatibility in docs/findings/ before adding a specialized adapter.
 """
 
 from __future__ import annotations
-
-import os
 
 import pytest
 
@@ -36,10 +34,10 @@ def test_meta_model_api_plain_and_structured_contract() -> None:
     definition = ModelDefinition(
         key="meta-smoke",
         provider="meta",
-        protocol="openai-chat-completions",
-        model_name=os.environ.get("AGENTSCOPE_META_SMOKE_MODEL", _DEFAULT_SMOKE_MODEL),
+        protocol="openai_chat_completions",
+        model_name=_DEFAULT_SMOKE_MODEL,
         credential_ref="meta_model_api_key",
         timeout_s=60.0,
     )
-    assert definition.resolved_base_url == "https://api.meta.ai/v1"
+    assert definition.resolved_endpoint == "https://api.meta.ai/v1"
     run_model_smoke(definition, secret.get_secret_value())

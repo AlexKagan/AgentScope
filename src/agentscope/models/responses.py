@@ -8,12 +8,14 @@ normalization failures, not free-form text actions.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agentscope.models._immutability import deep_freeze
 from agentscope.models.cost import LLMCost
 from agentscope.models.usage import LLMUsage
 
@@ -48,6 +50,15 @@ class ToolCall(BaseModel):
     arguments: Mapping[str, Any]
     origin: ToolCallOrigin = ToolCallOrigin.PROVIDER
 
+    @model_validator(mode="after")
+    def _freeze_arguments(self) -> ToolCall:
+        try:
+            json.dumps(self.arguments)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("tool-call arguments must be JSON-compatible") from exc
+        object.__setattr__(self, "arguments", deep_freeze(self.arguments))
+        return self
+
 
 class ModelResponse(BaseModel):
     """A frozen, provider-neutral normalization of one model call."""
@@ -61,3 +72,6 @@ class ModelResponse(BaseModel):
     cost: LLMCost
     provider_metadata: Mapping[str, Any] = Field(default_factory=dict)
     model_call_id: str | None = None
+
+    def model_post_init(self, _context: Any) -> None:
+        object.__setattr__(self, "provider_metadata", deep_freeze(self.provider_metadata))

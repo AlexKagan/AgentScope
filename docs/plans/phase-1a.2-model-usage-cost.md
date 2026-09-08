@@ -282,8 +282,6 @@ capabilities = ["text", "tool_calling"]
 temperature = 0.0
 max_output_tokens = 4000
 
-[models.fast.reasoning]
-mode = "disabled"
 ```
 
 The fields have intentionally different meanings:
@@ -318,9 +316,10 @@ marker. Configuration uses these semantics consistently:
 
 Provider default, explicitly disabled, and explicitly enabled reasoning are
 three different configurations and must produce different fingerprints.
-Adapters translate the canonical intent; users need not know whether a provider
-represents disabled reasoning as `null`, `"none"`, `enabled = false`, or another
-protocol-specific value.
+Adapters translate the canonical intent only for provider profiles with a
+verified wire representation. A profile such as Meta that has no verified
+non-default reasoning translation rejects `disabled` and `enabled` eagerly;
+use `provider_default` or omit its reasoning table.
 
 `parameters` contains portable AgentScope-defined options. `provider_options`
 may contain additional JSON-compatible request fields supported by a particular

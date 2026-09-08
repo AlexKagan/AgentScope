@@ -36,16 +36,20 @@ class ScriptedChatModel:
         self.calls = 0
         self.bound_tools: list[dict[str, Any]] | None = None
         self.bound_kwargs: dict[str, Any] | None = None
+        self.invoke_kwargs: list[dict[str, Any]] = []
         self.received: list[list[Any]] = []
+        self.root_async_client: Any = None
+        self.async_client: Any = None
 
     def bind_tools(self, tools: list[dict[str, Any]], **kwargs: Any) -> ScriptedChatModel:
         self.bound_tools = tools
         self.bound_kwargs = kwargs
         return self
 
-    async def ainvoke(self, messages: list[Any]) -> Any:
+    async def ainvoke(self, messages: list[Any], **kwargs: Any) -> Any:
         self.calls += 1
         self.received.append(messages)
+        self.invoke_kwargs.append(kwargs)
         item = self._script.pop(0) if len(self._script) > 1 else self._script[0]
         if isinstance(item, BaseException):
             raise item

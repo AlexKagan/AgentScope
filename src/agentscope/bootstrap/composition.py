@@ -57,10 +57,9 @@ def build_platform(
         telemetry = NoOpSink()
 
     models = ModelRegistry()
-    if public.models:
+    if public.models is not None:
         factory = model_adapter_factory or default_model_adapter_factory
-        for key in sorted(public.models):
-            definition = public.models[key]
+        for definition in (public.models.regular, public.models.fast):
             api_key = secret.require(definition.credential_ref)
             models.register(definition, factory(definition, api_key))
 

@@ -11,19 +11,18 @@ Does **not** own agent topology or any model-visible state.
 ## Public contracts
 | Symbol | Contract |
 |---|---|
-| `Platform` | Frozen: `config`, `registry`, `telemetry`, `model_client` (repr-suppressed). |
-| `build_platform(public, secret, *, registry=None, model_client_factory=None, telemetry_factory=None)` | Composes a `Platform`. `NoOpSink` unless telemetry is enabled; model client built only when `primary_model` is set; missing key raises `MissingSecretError` at bootstrap. |
-| `ModelClientFactory` (Protocol) | `(ModelIdentifier, api_key: str) -> object`. The seam where a raw key becomes a narrow capability. |
-| `default_model_client_factory` | Phase 0 placeholder — raises `NotImplementedError` (model invocation is Phase 1A). |
+| `Platform` | Frozen shell containing `config`, architecture `registry`, `telemetry`, and the live model `models` registry (repr-suppressed). |
+| `build_platform(public, secret, *, registry=None, model_adapter_factory=None, telemetry_factory=None)` | Composes a `Platform`. A model-free config constructs no adapters; a model-enabled config constructs and registers both `regular` and `fast` slots. |
+| `ModelAdapterFactory` (Protocol) | `(ModelDefinition, api_key: str) -> ModelAdapter`. The seam where a raw key becomes a narrow capability. |
+| `default_model_adapter_factory` | Lazily constructs the LangChain `OpenAICompatibleChatAdapter`; provider I/O starts only on `ainvoke`. |
 
 ## Dependencies
-- **Inward:** `config`, `architectures`, `telemetry`.
+- **Inward:** `config`, `models`, `architectures`, `telemetry`.
 - **Outward:** application entrypoints (Phase 1A+).
 - **Third-party:** none directly.
 
 ## Failure modes
 `MissingSecretError` when a required credential is absent;
-`NotImplementedError` from the default model-client factory;
 `ValueError` from `configure_phoenix` when misconfigured.
 
 ## Tests
@@ -41,5 +40,4 @@ injected capabilities. Enforced by the static-scan test that forbids
 `SecretConfig` references elsewhere.
 
 ## Deferred work
-Model-provider adapters and their credential requirements (Phase 1A); real
-secret-store integration (deferred).
+Real secret-store integration and dynamic credential rotation.

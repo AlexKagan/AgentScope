@@ -1,6 +1,6 @@
-"""Stable-key model registration and resolution (design 8.1, D3).
+"""Purpose-slot model registration and resolution (design 8.1, D3).
 
-The registry maps a stable, user-facing configuration key (``primary-reasoner``)
+The registry maps a fixed, user-facing purpose slot (``regular`` or ``fast``)
 to its canonical :class:`ModelDefinition` and the live
 :class:`~agentscope.models.protocol.ModelAdapter` built for it at composition.
 Only the key and the safe identity may enter durable state; the adapter and its

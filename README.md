@@ -13,8 +13,8 @@ concrete `SandboxRuntime` implementation — `SbxSandboxRuntime`, backed by
 the real `sbx` (Docker Sandboxes) CLI — with its lifecycle, isolation, and
 timeout guarantees verified against the real sandbox, not just fakes.
 **Phase 1A.2** adds the model boundary: an async `ModelAdapter` protocol, one
-LangChain OpenAI-compatible Chat Completions adapter, a stable-key model
-registry, native structured tool calls, normalized `LLMUsage`, and `Decimal`
+LangChain OpenAI-compatible Chat Completions adapter, purpose-based `regular`
+and `fast` model slots, native structured tool calls, normalized `LLMUsage`, and `Decimal`
 cost with explicit provenance — provider payloads never leak past
 `agentscope.models`. There is still **no runnable agent**; that remains a
 separate, later axis. See `docs/plans/phase-1a.2-model-usage-cost.md`,
@@ -53,8 +53,7 @@ uv sync --extra phoenix  # arize-phoenix-otel convenience wrapper (pulls grpcio)
 Configuration is split in two (design §8, ADR 0006):
 
 - **Public** (`PublicConfig`) — non-secret, validated, serializable: selected
-  architecture, `primary_model_key` (a stable key such as `primary-reasoner`), a
-  typed `models` catalog of `ModelDefinition`s, runtime mode, limits, telemetry
+  architecture, typed `models.regular` and `models.fast` definitions, runtime mode, limits, telemetry
   endpoint, log level. Built programmatically or loaded from a typed TOML file
   via `agentscope.config.load_public_config(path)`. As of Phase 1A.2 it is a
   plain frozen model and is **not** an environment/`.env` source.

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from agentscope.models.configuration import ModelDefinition
 
-__all__ = ["Limits", "PublicConfig", "RuntimeMode"]
+__all__ = ["Limits", "ModelSlots", "PublicConfig", "RuntimeMode"]
 
 _LOG_LEVELS = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"})
 
@@ -40,14 +40,28 @@ class Limits(BaseModel):
     max_output_bytes: int = Field(default=1_000_000, gt=0)
 
 
+class ModelSlots(BaseModel):
+    """The two provider-independent model roles available to architectures."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    regular: ModelDefinition
+    fast: ModelDefinition
+
+    @model_validator(mode="after")
+    def _fixed_keys(self) -> ModelSlots:
+        if self.regular.key != "regular" or self.fast.key != "fast":
+            raise ValueError("model definition keys must match their regular/fast slots")
+        return self
+
+
 class PublicConfig(BaseModel):
     """Validated, serializable, non-secret application configuration."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     architecture_key: str | None = None
-    primary_model_key: str | None = None
-    models: dict[str, ModelDefinition] = Field(default_factory=dict)
+    models: ModelSlots | None = None
     runtime_mode: RuntimeMode = RuntimeMode.FAKE
     telemetry_enabled: bool = False
     telemetry_endpoint: str | None = None
@@ -57,12 +71,14 @@ class PublicConfig(BaseModel):
     @field_validator("models", mode="before")
     @classmethod
     def _fill_model_keys(cls, value: Any) -> Any:
-        """Let the catalog key stand in for an omitted ``key`` in each entry."""
+        """Inject fixed internal registry keys into the two public slots."""
         if not isinstance(value, dict):
             return value
         filled: dict[str, Any] = {}
         for name, entry in value.items():
-            if isinstance(entry, dict) and "key" not in entry:
+            if isinstance(entry, dict):
+                if "key" in entry:
+                    raise ValueError("model slot configuration must not contain an internal key")
                 entry = {**entry, "key": name}
             filled[name] = entry
         return filled
@@ -80,26 +96,6 @@ class PublicConfig(BaseModel):
         if self.telemetry_enabled and not self.telemetry_endpoint:
             raise ValueError("telemetry_endpoint is required when telemetry_enabled is true")
         return self
-
-    @model_validator(mode="after")
-    def _model_catalog_is_consistent(self) -> PublicConfig:
-        for key, definition in self.models.items():
-            if definition.key != key:
-                raise ValueError(
-                    f"model catalog key {key!r} does not match definition key {definition.key!r}"
-                )
-        if self.primary_model_key is not None and self.primary_model_key not in self.models:
-            raise ValueError(
-                f"primary_model_key {self.primary_model_key!r} is not defined in the model catalog"
-            )
-        return self
-
-    @property
-    def primary_model(self) -> ModelDefinition | None:
-        """The selected model definition, or ``None`` when no model is selected."""
-        if self.primary_model_key is None:
-            return None
-        return self.models[self.primary_model_key]
 
     def safe_dump(self) -> dict[str, Any]:
         """Return a JSON-safe snapshot. This object holds no secrets."""

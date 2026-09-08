@@ -18,10 +18,14 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from agentscope.models._immutability import deep_freeze
 from agentscope.models.configuration import Capability, ModelDefinition
 from agentscope.models.errors import ModelCapabilityError, ModelInvalidRequestError
+from agentscope.models.responses import ToolCall
 
 __all__ = ["Message", "ModelRequest", "Role", "ToolDefinition"]
 
@@ -60,13 +64,18 @@ class Message(BaseModel):
     content: str
     tool_call_id: str | None = None
     name: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
 
     @model_validator(mode="after")
     def _validate(self) -> Message:
-        if self.content == "" or self.content.strip() == "":
+        if (self.content == "" or self.content.strip() == "") and not (
+            self.role is Role.ASSISTANT and self.tool_calls
+        ):
             raise ModelInvalidRequestError(f"message content for role {self.role} is empty")
         if self.role is Role.TOOL and not self.tool_call_id:
             raise ModelInvalidRequestError("a tool-role message requires a tool_call_id")
+        if self.tool_calls and self.role is not Role.ASSISTANT:
+            raise ModelInvalidRequestError("only an assistant message may carry tool_calls")
         return self
 
 
@@ -95,6 +104,13 @@ class ToolDefinition(BaseModel):
             raise ModelInvalidRequestError(
                 f'tool {self.name!r} parameters must be a JSON Schema object ("type": "object")'
             )
+        try:
+            Draft202012Validator.check_schema(dict(params))
+        except SchemaError as exc:
+            raise ModelInvalidRequestError(
+                f"tool {self.name!r} parameters are not a valid JSON Schema"
+            ) from exc
+        object.__setattr__(self, "parameters", deep_freeze(params))
         return self
 
 
@@ -131,6 +147,7 @@ class ModelRequest(BaseModel):
                 f"per-call options may not override {forbidden}; these are fixed by the "
                 "model definition"
             )
+        object.__setattr__(self, "options", deep_freeze(self.options))
         return self
 
     def require_capabilities(self, definition: ModelDefinition) -> None:

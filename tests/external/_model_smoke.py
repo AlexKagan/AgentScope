@@ -39,12 +39,15 @@ def _adapter(definition: ModelDefinition, api_key: str) -> OpenAICompatibleChatA
 
 
 def run_model_smoke(definition: ModelDefinition, api_key: str) -> None:
-    adapter = _adapter(definition, api_key)
-    try:
-        asyncio.run(_plain(adapter))
-        asyncio.run(_structured(adapter))
-    finally:
-        asyncio.run(adapter.aclose())
+    async def run() -> None:
+        adapter = _adapter(definition, api_key)
+        try:
+            await _plain(adapter)
+            await _structured(adapter)
+        finally:
+            await adapter.aclose()
+
+    asyncio.run(run())
 
 
 async def _plain(adapter: OpenAICompatibleChatAdapter) -> None:

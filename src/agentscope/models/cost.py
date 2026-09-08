@@ -42,9 +42,9 @@ class PriceCard(BaseModel):
 
     pricing_id: str = Field(min_length=1)
     version: str = Field(min_length=1)
-    input_usd_per_mtok: Decimal = Field(ge=0)
-    output_usd_per_mtok: Decimal = Field(ge=0)
-    cached_input_usd_per_mtok: Decimal | None = Field(default=None, ge=0)
+    input_usd_per_mtok: Decimal = Field(ge=0, allow_inf_nan=False)
+    output_usd_per_mtok: Decimal = Field(ge=0, allow_inf_nan=False)
+    cached_input_usd_per_mtok: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
     # Policy applied when cached input tokens exist but no cached rate is set.
     # The choice is part of the pricing identity.
     cached_policy: str = Field(default="unknown", pattern=r"^(input_rate|unknown)$")
@@ -60,7 +60,7 @@ class LLMCost(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    amount_usd: Decimal | None
+    amount_usd: Decimal | None = Field(allow_inf_nan=False)
     source: CostSource
     pricing_identity: str | None = None
     pricing_version: str | None = None
@@ -75,8 +75,8 @@ def _decimal(value: Any, label: str) -> Decimal:
         result = Decimal(str(value))
     except Exception as exc:
         raise ValueError(f"{label} is not a valid decimal: {value!r}") from exc
-    if result < 0:
-        raise ValueError(f"{label} must not be negative: {result}")
+    if not result.is_finite() or result < 0:
+        raise ValueError(f"{label} must be a finite non-negative decimal: {result}")
     return result
 
 

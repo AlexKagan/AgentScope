@@ -34,10 +34,20 @@ def test_fingerprint_changes_for_every_behavior_affecting_option() -> None:
     base = _defn().fingerprint()
     assert _defn(model_name="muse-spark-2.0").fingerprint() != base
     assert _defn(provider="openrouter", credential_ref="openrouter_api_key").fingerprint() != base
-    assert _defn(request_options={"temperature": 0.1}).fingerprint() != base
-    assert _defn(reasoning_options={"effort": "high"}).fingerprint() != base
+    assert _defn(parameters={"temperature": 0.1}).fingerprint() != base
+    assert (
+        _defn(
+            provider="openrouter",
+            credential_ref="openrouter_api_key",
+            capabilities=["text", "reasoning"],
+            reasoning={"mode": "enabled", "effort": "high"},
+        ).fingerprint()
+        != base
+    )
+    assert _defn(provider_options={"logprobs": True}).fingerprint() != base
     assert _defn(adapter_version="2.0.0").fingerprint() != base
     assert _defn(tool_schema_version="9.9.9").fingerprint() != base
+    assert _defn(timeout_s=12).fingerprint() != base
     priced = _defn(
         pricing=PriceCard(
             pricing_id="meta-muse",
@@ -47,6 +57,20 @@ def test_fingerprint_changes_for_every_behavior_affecting_option() -> None:
         )
     )
     assert priced.fingerprint() != base
+
+
+def test_fingerprint_changes_when_price_rates_change_without_version_change() -> None:
+    def priced(input_rate: str) -> ModelDefinition:
+        return _defn(
+            pricing=PriceCard(
+                pricing_id="meta-muse",
+                version="2026-01",
+                input_usd_per_mtok=Decimal(input_rate),
+                output_usd_per_mtok=Decimal("2"),
+            )
+        )
+
+    assert priced("1").fingerprint() != priced("9").fingerprint()
 
 
 def test_fingerprint_stable_across_credential_rotation() -> None:

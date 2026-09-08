@@ -7,13 +7,15 @@ allowlisted layer.
 
 Example::
 
-    primary_model_key = "primary-reasoner"
+    [models.regular]
+    provider = "openrouter"
+    model_name = "anthropic/claude-sonnet-4.6"
+    credential_ref = "openrouter_api_key"
 
-    [models.primary-reasoner]
+    [models.fast]
     provider = "meta"
     model_name = "muse-spark-1.3"
     credential_ref = "meta_model_api_key"
-    timeout_s = 60
 """
 
 from __future__ import annotations

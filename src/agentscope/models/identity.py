@@ -22,15 +22,16 @@ class ProviderProfile:
 
     ``provider`` is the service identity (``meta``, ``openrouter``); it is not a
     URL. ``protocol`` selects request/response semantics and the adapter mode.
-    ``allowed_request_options`` is the explicit per-profile allowlist of safe
-    provider request kwargs — anything else is rejected during validation.
+    ``allowed_provider_options`` is the explicit per-profile allowlist for the
+    provider-specific escape hatch.
     """
 
     provider: str
     protocol: str
     base_url: str
     credential_ref: str
-    allowed_request_options: frozenset[str] = field(default_factory=frozenset)
+    allowed_provider_options: frozenset[str] = field(default_factory=frozenset)
+    authoritative_cost_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,11 +43,13 @@ class SafeModelIdentity:
     model_name: str
     endpoint: str
     credential_ref: str
-    reasoning_options: tuple[tuple[str, str], ...]
-    request_options: tuple[tuple[str, str], ...]
+    timeout_s: float
+    allow_insecure_http: bool
+    reasoning: tuple[tuple[str, object], ...]
+    parameters: tuple[tuple[str, object], ...]
+    provider_options: tuple[tuple[str, object], ...]
     capabilities: tuple[str, ...]
-    pricing_identity: str | None
-    pricing_version: str | None
+    pricing: tuple[tuple[str, object], ...] | None
     adapter_version: str
     tool_schema_version: str
 
@@ -58,11 +61,13 @@ class SafeModelIdentity:
             "model_name": self.model_name,
             "endpoint": self.endpoint,
             "credential_ref": self.credential_ref,
-            "reasoning_options": [list(pair) for pair in self.reasoning_options],
-            "request_options": [list(pair) for pair in self.request_options],
+            "timeout_s": self.timeout_s,
+            "allow_insecure_http": self.allow_insecure_http,
+            "reasoning": [list(pair) for pair in self.reasoning],
+            "parameters": [list(pair) for pair in self.parameters],
+            "provider_options": [list(pair) for pair in self.provider_options],
             "capabilities": list(self.capabilities),
-            "pricing_identity": self.pricing_identity,
-            "pricing_version": self.pricing_version,
+            "pricing": None if self.pricing is None else [list(pair) for pair in self.pricing],
             "adapter_version": self.adapter_version,
             "tool_schema_version": self.tool_schema_version,
         }

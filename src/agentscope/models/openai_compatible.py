@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
-from agentscope.models.configuration import ModelDefinition
+from agentscope.models.configuration import ModelDefinition, ReasoningMode
 from agentscope.models.cost import LLMCost, calculate_cost
 from agentscope.models.errors import (
     ModelAuthenticationError,
@@ -41,9 +41,9 @@ from agentscope.models.usage import normalize_usage
 
 __all__ = ["AuthoritativeCostExtractor", "OpenAICompatibleChatAdapter"]
 
-# A provider-profile hook: given the safe provider metadata for a call, return an
-# authoritative cost in USD, or ``None`` when the provider does not document one.
-AuthoritativeCostExtractor = Any
+# A provider-profile hook used only inside this trust boundary: inspect the raw
+# response and return an authoritative cost in USD, or ``None``.
+AuthoritativeCostExtractor = Callable[[Any], Any | None]
 
 _FINISH_REASONS = {
     "stop": FinishReason.STOP,
@@ -57,6 +57,23 @@ _FINISH_REASONS = {
 _SAFE_METADATA_KEYS = ("model_name", "finish_reason", "system_fingerprint", "service_tier")
 
 
+def _openrouter_usage_cost(raw: Any) -> Any | None:
+    usage = getattr(raw, "usage_metadata", None)
+    if isinstance(usage, Mapping) and "cost" in usage:
+        return usage["cost"]
+    metadata = _meta(raw)
+    for key in ("token_usage", "usage"):
+        raw_usage = metadata.get(key)
+        if isinstance(raw_usage, Mapping) and "cost" in raw_usage:
+            return raw_usage["cost"]
+    return None
+
+
+_AUTHORITATIVE_COST_EXTRACTORS: dict[str, AuthoritativeCostExtractor] = {
+    "openrouter_usage": _openrouter_usage_cost,
+}
+
+
 def _tool_schema(tool: ToolDefinition) -> dict[str, Any]:
     return {
         "type": "function",
@@ -68,6 +85,39 @@ def _tool_schema(tool: ToolDefinition) -> dict[str, Any]:
     }
 
 
+def _portable_init_parameters(definition: ModelDefinition) -> dict[str, Any]:
+    supplied = definition.parameters.supplied()
+    translated: dict[str, Any] = {}
+    for key, value in supplied.items():
+        if key == "max_output_tokens":
+            translated["max_tokens"] = value
+        elif key != "verbosity":
+            translated[key] = value
+    return translated
+
+
+def _provider_extra_body(definition: ModelDefinition) -> dict[str, Any]:
+    body = dict(definition.provider_options)
+    verbosity = definition.parameters.verbosity
+    if verbosity is not None:
+        body["verbosity"] = verbosity
+
+    reasoning = definition.reasoning
+    if reasoning.mode is ReasoningMode.PROVIDER_DEFAULT:
+        return body
+    if definition.provider == "openrouter":
+        if reasoning.mode is ReasoningMode.DISABLED:
+            body["reasoning"] = {"effort": "none"}
+        else:
+            payload: dict[str, Any] = {"exclude": reasoning.exclude}
+            if reasoning.effort is not None:
+                payload["effort"] = reasoning.effort
+            else:
+                payload["max_tokens"] = reasoning.max_tokens
+            body["reasoning"] = payload
+    return body
+
+
 class OpenAICompatibleChatAdapter:
     """Invokes one OpenAI-compatible chat model through LangChain ``ChatOpenAI``."""
 
@@ -77,25 +127,28 @@ class OpenAICompatibleChatAdapter:
         api_key: str,
         *,
         chat_model_factory: Any = None,
-        authoritative_cost_extractor: AuthoritativeCostExtractor = None,
+        authoritative_cost_extractor: AuthoritativeCostExtractor | None = None,
     ) -> None:
         self._definition = definition
         self._identity = definition.identity()
         self._cost_extractor = authoritative_cost_extractor
         self._closed = False
+        init_kwargs: dict[str, Any] = {
+            "model": definition.model_name,
+            "base_url": definition.resolved_endpoint,
+            "api_key": api_key,
+            "timeout": definition.timeout_s,
+            "max_retries": 0,
+            **_portable_init_parameters(definition),
+        }
+        extra_body = _provider_extra_body(definition)
+        if extra_body:
+            init_kwargs["extra_body"] = extra_body
         if chat_model_factory is not None:
-            self._model = chat_model_factory()
+            self._model = chat_model_factory(**init_kwargs)
         else:  # pragma: no cover - exercised only by live smokes
             from langchain_openai import ChatOpenAI
 
-            init_kwargs: dict[str, Any] = {
-                "model": definition.model_name,
-                "base_url": definition.resolved_base_url,
-                "api_key": api_key,
-                "timeout": definition.timeout_s,
-                "max_retries": 0,
-                **dict(definition.request_options),
-            }
             self._model = ChatOpenAI(**init_kwargs)
 
     @property
@@ -103,7 +156,13 @@ class OpenAICompatibleChatAdapter:
         return self._identity
 
     async def ainvoke(self, request: ModelRequest) -> ModelResponse:
+        if self._closed:
+            raise ModelProviderError("model adapter is closed")
         request.require_capabilities(self._definition)
+        try:
+            self._definition.validate_invocation_options(request.options)
+        except ModelError as exc:
+            raise ModelInvalidRequestError(str(exc)) from exc
         messages = _to_langchain_messages(request)
 
         bound = self._model
@@ -114,15 +173,20 @@ class OpenAICompatibleChatAdapter:
             bound = self._model.bind_tools([_tool_schema(t) for t in request.tools], **kwargs)
 
         try:
-            raw = await bound.ainvoke(messages)
+            raw = await bound.ainvoke(messages, **dict(request.options))
         except asyncio.CancelledError:
             raise  # cancellation is not a provider failure
         except ModelError:
             raise
-        except BaseException as exc:
+        except Exception as exc:
             raise self._normalize_error(exc) from exc
 
-        return self._normalize_response(raw, request)
+        try:
+            return self._normalize_response(raw, request)
+        except ModelError:
+            raise
+        except Exception as exc:
+            raise ModelResponseNormalizationError("model response could not be normalized") from exc
 
     async def aclose(self) -> None:
         if self._closed:
@@ -152,14 +216,21 @@ class OpenAICompatibleChatAdapter:
         tool_calls = _normalize_tool_calls(
             getattr(raw, "tool_calls", None) or (), model_call_id or request.call_id
         )
+        if text is None and not tool_calls:
+            raise ModelResponseNormalizationError(
+                "model response contains neither assistant text nor tool calls"
+            )
 
-        usage = normalize_usage(_flatten_usage(getattr(raw, "usage_metadata", None)))
+        authoritative = self._extract_authoritative_cost(raw)
+        usage = normalize_usage(
+            _flatten_usage(getattr(raw, "usage_metadata", None)),
+            provider_reported_cost_usd=authoritative,
+        )
         metadata = _safe_metadata(_meta(raw))
-        authoritative = None
-        if self._cost_extractor is not None:
-            authoritative = self._cost_extractor(metadata)
         cost: LLMCost = calculate_cost(
-            usage, self._definition.pricing, provider_authoritative_cost=authoritative
+            usage,
+            self._definition.pricing,
+            provider_authoritative_cost=usage.provider_reported_cost_usd,
         )
 
         finish = _meta(raw).get("finish_reason")
@@ -176,6 +247,14 @@ class OpenAICompatibleChatAdapter:
             provider_metadata=metadata,
             model_call_id=model_call_id,
         )
+
+    def _extract_authoritative_cost(self, raw: Any) -> Any | None:
+        if self._cost_extractor is not None:
+            return self._cost_extractor(raw)
+        source = self._definition.profile.authoritative_cost_source
+        if source is None:
+            return None
+        return _AUTHORITATIVE_COST_EXTRACTORS[source](raw)
 
     def _normalize_error(self, exc: BaseException) -> ModelError:
         name = type(exc).__name__
@@ -197,8 +276,19 @@ class OpenAICompatibleChatAdapter:
         }:
             return ModelInvalidRequestError("model provider rejected the request payload")
         status = getattr(exc, "status_code", None)
-        if isinstance(status, int) and 400 <= status < 500:
-            return ModelInvalidRequestError("model provider rejected the request payload")
+        if isinstance(status, int):
+            if status == 401:
+                return ModelAuthenticationError("model provider rejected the credential")
+            if status == 403:
+                return ModelAuthorizationError(
+                    "credential is not permitted for this model or action"
+                )
+            if status == 408:
+                return ModelTimeoutError("model provider attempt timed out")
+            if status == 429:
+                return ModelRateLimitError("model provider rate-limited the request")
+            if 400 <= status < 500:
+                return ModelInvalidRequestError("model provider rejected the request payload")
         return ModelProviderError("model provider returned an unclassified failure")
 
 
@@ -275,7 +365,20 @@ def _to_langchain_messages(request: ModelRequest) -> list[Any]:
         elif message.role is Role.USER:
             out.append(HumanMessage(content=message.content))
         elif message.role is Role.ASSISTANT:
-            out.append(AIMessage(content=message.content))
+            out.append(
+                AIMessage(
+                    content=message.content,
+                    tool_calls=[
+                        {
+                            "name": call.name,
+                            "args": dict(call.arguments),
+                            "id": call.id,
+                            "type": "tool_call",
+                        }
+                        for call in message.tool_calls
+                    ],
+                )
+            )
         else:  # Role.TOOL
             out.append(
                 ToolMessage(content=message.content, tool_call_id=message.tool_call_id or "")

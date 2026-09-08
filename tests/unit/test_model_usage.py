@@ -89,6 +89,19 @@ def test_provider_reported_cost_is_carried_as_decimal_when_supplied() -> None:
     assert u.provider_reported_cost_usd == Decimal("0.00123")
 
 
+@pytest.mark.parametrize("cost", ["-1", "NaN", "Infinity"])
+def test_invalid_provider_cost_is_rejected(cost: str) -> None:
+    with pytest.raises(ModelResponseNormalizationError):
+        normalize_usage({"input_tokens": 1, "output_tokens": 1}, provider_reported_cost_usd=cost)
+
+
+def test_usage_subdimensions_cannot_exceed_parent_dimension() -> None:
+    with pytest.raises(ModelResponseNormalizationError):
+        normalize_usage({"input_tokens": 1, "output_tokens": 1, "cached_input_tokens": 2})
+    with pytest.raises(ModelResponseNormalizationError):
+        normalize_usage({"input_tokens": 1, "output_tokens": 1, "reasoning_tokens": 2})
+
+
 def test_usage_is_frozen() -> None:
     u = LLMUsage(input_tokens=1, output_tokens=1, total_tokens=2)
     with pytest.raises(Exception):  # noqa: B017

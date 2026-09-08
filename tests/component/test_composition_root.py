@@ -13,13 +13,10 @@ from agentscope.telemetry.noop import NoOpSink
 from tests._fakes import FakeModelAdapterFactory
 
 _META = ModelDefinition(
-    key="primary-reasoner",
-    provider="meta",
-    model_name="muse-spark-1.3",
-    credential_ref="meta_model_api_key",
+    key="regular", provider="meta", model_name="muse-spark-1.3", credential_ref="meta_model_api_key"
 )
 _OPENROUTER = ModelDefinition(
-    key="router",
+    key="fast",
     provider="openrouter",
     model_name="some/cheap-model",
     credential_ref="openrouter_api_key",
@@ -32,6 +29,10 @@ def _public(**kw: object) -> PublicConfig:
 
 def _secret(**kw: object) -> SecretConfig:
     return SecretConfig(_env_file=None, **kw)  # type: ignore[arg-type]
+
+
+def _configured() -> PublicConfig:
+    return _public(models={"regular": _META, "fast": _OPENROUTER})
 
 
 def test_defaults_build_without_credentials_or_network() -> None:
@@ -51,39 +52,40 @@ def test_injected_telemetry_factory_is_used() -> None:
     assert platform.telemetry is sink
 
 
-def test_model_adapter_built_from_key_and_registered() -> None:
+def test_both_purpose_slots_are_built_and_registered() -> None:
     factory = FakeModelAdapterFactory()
     platform = build_platform(
-        _public(primary_model_key="primary-reasoner", models={"primary-reasoner": _META}),
+        _configured(),
+        _secret(meta_model_api_key="sk-REAL-META-123", openrouter_api_key="sk-or-REAL-123"),
+        model_adapter_factory=factory,
+    )
+    assert factory.calls == [(_META, "sk-REAL-META-123"), (_OPENROUTER, "sk-or-REAL-123")]
+    assert platform.models.resolve("regular").definition is _META
+    assert platform.models.resolve("fast").definition is _OPENROUTER
+    assert platform.models.keys() == ("fast", "regular")
+
+
+@pytest.mark.parametrize(
+    "secrets",
+    [
+        {"meta_model_api_key": "sk-REAL-META-123"},
+        {"openrouter_api_key": "sk-or-REAL-123"},
+    ],
+)
+def test_each_configured_slot_requires_its_credential(secrets: dict[str, str]) -> None:
+    with pytest.raises(MissingSecretError):
+        build_platform(
+            _configured(), _secret(**secrets), model_adapter_factory=FakeModelAdapterFactory()
+        )
+
+
+def test_same_provider_for_both_slots_reuses_credential_without_aliases() -> None:
+    fast_meta = _META.model_copy(update={"key": "fast", "model_name": "muse-spark-1.3-fast"})
+    factory = FakeModelAdapterFactory()
+    platform = build_platform(
+        _public(models={"regular": _META, "fast": fast_meta}),
         _secret(meta_model_api_key="sk-REAL-META-123"),
         model_adapter_factory=factory,
     )
-    assert factory.calls == [(_META, "sk-REAL-META-123")]
-    resolved = platform.models.resolve("primary-reasoner")
-    assert resolved.definition is _META
-    assert resolved.adapter is factory.adapters[0]
-
-
-def test_meta_selection_does_not_require_openrouter_or_openai_key() -> None:
-    build_platform(
-        _public(primary_model_key="primary-reasoner", models={"primary-reasoner": _META}),
-        _secret(meta_model_api_key="sk-REAL-META-123"),
-        model_adapter_factory=FakeModelAdapterFactory(),
-    )  # no openai/openrouter key present -> still succeeds
-
-
-def test_openrouter_selection_requires_only_openrouter_key() -> None:
-    build_platform(
-        _public(primary_model_key="router", models={"router": _OPENROUTER}),
-        _secret(openrouter_api_key="sk-or-REAL-123"),
-        model_adapter_factory=FakeModelAdapterFactory(),
-    )
-
-
-def test_missing_key_fails_fast_at_bootstrap() -> None:
-    with pytest.raises(MissingSecretError):
-        build_platform(
-            _public(primary_model_key="primary-reasoner", models={"primary-reasoner": _META}),
-            _secret(),
-            model_adapter_factory=FakeModelAdapterFactory(),
-        )
+    assert len(factory.calls) == 2
+    assert platform.models.keys() == ("fast", "regular")

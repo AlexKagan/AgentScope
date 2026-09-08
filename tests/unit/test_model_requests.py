@@ -7,6 +7,7 @@ import pytest
 from agentscope.models.configuration import Capability, ModelDefinition
 from agentscope.models.errors import ModelCapabilityError, ModelInvalidRequestError
 from agentscope.models.requests import Message, ModelRequest, Role, ToolDefinition
+from agentscope.models.responses import ToolCall
 
 _OBJ_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}}
 
@@ -63,6 +64,11 @@ def test_non_object_schema_rejected() -> None:
         ToolDefinition(name="t", parameters={"type": "string"})
 
 
+def test_structurally_invalid_json_schema_rejected() -> None:
+    with pytest.raises(ModelInvalidRequestError):
+        ToolDefinition(name="t", parameters={"type": "object", "properties": 7})
+
+
 def test_callable_in_schema_rejected() -> None:
     with pytest.raises(ModelInvalidRequestError):
         ToolDefinition(name="t", parameters={"type": "object", "fn": lambda: None})
@@ -112,3 +118,21 @@ def test_request_is_frozen() -> None:
     req = ModelRequest(messages=(_msg(),))
     with pytest.raises(Exception):  # noqa: B017
         req.tool_choice = "required"  # type: ignore[misc]
+
+
+def test_request_and_tool_schema_are_deeply_immutable() -> None:
+    schema = {"type": "object", "properties": {"city": {"type": "string"}}}
+    tool = ToolDefinition(name="t", parameters=schema)
+    schema["properties"] = {}
+    assert "city" in tool.parameters["properties"]
+    with pytest.raises(TypeError):
+        tool.parameters["properties"]["city"] = {}  # type: ignore[index]
+
+    req = ModelRequest(messages=(_msg(),), options={"temperature": 0.1})
+    with pytest.raises(TypeError):
+        req.options["temperature"] = 0.2  # type: ignore[index]
+
+
+def test_tool_call_arguments_must_be_json_compatible() -> None:
+    with pytest.raises(Exception, match="JSON-compatible"):
+        ToolCall(id="call_1", name="t", arguments={"bad": object()})

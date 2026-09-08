@@ -10,34 +10,36 @@ from pydantic import ValidationError
 
 from agentscope.config.loader import load_public_config
 from agentscope.config.public import PublicConfig, RuntimeMode
-from agentscope.models.configuration import ModelDefinition
 
 _META_MODEL = {
-    "key": "primary-reasoner",
     "provider": "meta",
     "model_name": "muse-spark-1.3",
     "credential_ref": "meta_model_api_key",
 }
+_ROUTER_MODEL = {
+    "provider": "openrouter",
+    "model_name": "openai/gpt-4o-mini",
+    "credential_ref": "openrouter_api_key",
+}
 
 
-def test_defaults() -> None:
+def _models() -> dict[str, object]:
+    return {"regular": _META_MODEL, "fast": _ROUTER_MODEL}
+
+
+def test_defaults_are_model_free() -> None:
     cfg = PublicConfig()
     assert cfg.runtime_mode is RuntimeMode.FAKE
     assert cfg.telemetry_enabled is False
     assert cfg.log_level == "INFO"
     assert cfg.limits.default_timeout_s == 30.0
-    assert cfg.models == {}
-    assert cfg.primary_model is None
+    assert cfg.models is None
 
 
-def test_is_not_a_settings_source_and_ignores_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_is_not_a_settings_source_and_ignores_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENTSCOPE_LOG_LEVEL", "debug")
-    monkeypatch.setenv("AGENTSCOPE_PRIMARY_MODEL_KEY", "primary-reasoner")
     cfg = PublicConfig()
     assert cfg.log_level == "INFO"
-    assert cfg.primary_model_key is None
 
 
 @pytest.mark.parametrize("bad", ["chatty", "trace", ""])
@@ -58,35 +60,46 @@ def test_telemetry_endpoint_required_when_enabled() -> None:
     assert ok.telemetry_enabled is True
 
 
-def test_model_catalog_key_must_match_definition_key() -> None:
-    defn = ModelDefinition(**_META_MODEL)  # type: ignore[arg-type]
+@pytest.mark.parametrize("models", [{"regular": _META_MODEL}, {"fast": _ROUTER_MODEL}])
+def test_model_enabled_config_requires_both_slots(models: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        PublicConfig(models={"wrong-key": defn})
+        PublicConfig(models=models)  # type: ignore[arg-type]
 
 
-def test_primary_model_key_must_be_in_catalog() -> None:
+def test_only_regular_and_fast_slots_are_allowed() -> None:
     with pytest.raises(ValidationError):
-        PublicConfig(primary_model_key="ghost")
+        PublicConfig(models={**_models(), "meta-fast": _META_MODEL})  # type: ignore[arg-type]
 
 
-def test_primary_model_resolves_to_definition() -> None:
-    cfg = PublicConfig(
-        primary_model_key="primary-reasoner",
-        models={"primary-reasoner": ModelDefinition(**_META_MODEL)},  # type: ignore[arg-type]
-    )
-    assert cfg.primary_model is not None
-    assert cfg.primary_model.model_name == "muse-spark-1.3"
+def test_slots_receive_fixed_internal_keys() -> None:
+    cfg = PublicConfig(models=_models())  # type: ignore[arg-type]
+    assert cfg.models is not None
+    assert cfg.models.regular.key == "regular"
+    assert cfg.models.fast.key == "fast"
+
+
+def test_legacy_primary_model_key_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        PublicConfig(primary_model_key="primary-reasoner")  # type: ignore[call-arg]
+
+
+def test_public_slot_rejects_user_supplied_internal_key() -> None:
+    with pytest.raises(ValidationError, match="must not contain an internal key"):
+        PublicConfig.model_validate(
+            {
+                "models": {
+                    "regular": {**_META_MODEL, "key": "regular"},
+                    "fast": _ROUTER_MODEL,
+                }
+            }
+        )
 
 
 def test_safe_dump_is_json_roundtrippable() -> None:
-    cfg = PublicConfig(
-        primary_model_key="primary-reasoner",
-        models={"primary-reasoner": ModelDefinition(**_META_MODEL)},  # type: ignore[arg-type]
-    )
-    dumped = cfg.safe_dump()
-    round_tripped = json.loads(json.dumps(dumped))
-    assert round_tripped["primary_model_key"] == "primary-reasoner"
-    assert round_tripped["models"]["primary-reasoner"]["model_name"] == "muse-spark-1.3"
+    cfg = PublicConfig(models=_models())  # type: ignore[arg-type]
+    round_tripped = json.loads(json.dumps(cfg.safe_dump()))
+    assert "primary_model_key" not in round_tripped
+    assert round_tripped["models"]["regular"]["model_name"] == "muse-spark-1.3"
 
 
 def test_frozen() -> None:
@@ -95,30 +108,42 @@ def test_frozen() -> None:
         cfg.log_level = "DEBUG"  # type: ignore[misc]
 
 
-def test_loader_reads_toml(tmp_path: Path) -> None:
+def test_loader_reads_canonical_toml_and_preserves_omission(tmp_path: Path) -> None:
     path = tmp_path / "agentscope.toml"
     path.write_text(
-        "\n".join(
-            [
-                'primary_model_key = "primary-reasoner"',
-                'log_level = "debug"',
-                "",
-                "[models.primary-reasoner]",
-                'provider = "meta"',
-                'model_name = "muse-spark-1.3"',
-                'credential_ref = "meta_model_api_key"',
-                "timeout_s = 45",
-            ]
-        ),
+        """log_level = "debug"
+
+[models.regular]
+provider = "openrouter"
+model_name = "anthropic/claude-sonnet-4.6"
+credential_ref = "openrouter_api_key"
+capabilities = ["text", "tool_calling", "reasoning"]
+
+[models.regular.parameters]
+temperature = 0.0
+verbosity = "high"
+
+[models.regular.reasoning]
+mode = "enabled"
+effort = "high"
+
+[models.fast]
+provider = "meta"
+model_name = "muse-spark-1.3"
+credential_ref = "meta_model_api_key"
+
+""",
         encoding="utf-8",
     )
     cfg = load_public_config(path)
     assert cfg.log_level == "DEBUG"
-    assert cfg.primary_model is not None
-    assert cfg.primary_model.timeout_s == 45.0
+    assert cfg.models is not None
+    assert cfg.models.regular.parameters.verbosity == "high"
+    assert "max_output_tokens" not in cfg.models.regular.parameters.supplied()
+    assert cfg.models.fast.reasoning.mode == "provider_default"
 
 
-def test_loader_rejects_invalid_config(tmp_path: Path) -> None:
+def test_loader_rejects_legacy_config(tmp_path: Path) -> None:
     path = tmp_path / "bad.toml"
     path.write_text('primary_model_key = "missing"\n', encoding="utf-8")
     with pytest.raises(ValidationError):
